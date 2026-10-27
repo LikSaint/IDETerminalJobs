@@ -31,7 +31,7 @@ class JobActions(private val project: Project) {
     fun editAction(job: JobDefinition): AnAction = EditJobAction(job)
 
     /** Runs the job right away, or asks for a variant first when it has any. */
-    fun runInteractive(job: JobDefinition, dataContext: DataContext) {
+    fun runInteractive(job: JobDefinition, dataContext: DataContext, anchor: JComponent? = null) {
         if (!job.enabled) return
         if (job.isGroup || job.variants.isEmpty()) {
             runtimes.run(job)
@@ -43,7 +43,7 @@ class JobActions(private val project: Project) {
             dataContext,
             JBPopupFactory.ActionSelectionAid.SPEEDSEARCH,
             true
-        ).showInBestPositionFor(dataContext)
+        ).run { if (anchor != null) showUnderneathOf(anchor) else showInBestPositionFor(dataContext) }
     }
 
     fun showJobMenu(job: JobDefinition, anchor: JComponent) {

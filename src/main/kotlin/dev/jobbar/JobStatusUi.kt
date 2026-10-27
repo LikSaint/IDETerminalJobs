@@ -1,5 +1,6 @@
 package dev.jobbar
 
+import com.intellij.ide.DataManager
 import com.intellij.openapi.project.Project
 import com.intellij.ui.AnimatedIcon
 import com.intellij.ui.JBColor
@@ -104,9 +105,13 @@ class JobChip : JBPanel<JobChip>(BorderLayout()) {
                 val point = SwingUtilities.convertPoint(event.component, event.point, this@JobChip)
                 if (!contains(point)) setHovered(false)
             }
+            // Right click (or the platform popup trigger, e.g. Ctrl+click on macOS) opens the job menu;
+            // a plain left click runs the job.
             override fun mousePressed(event: MouseEvent) {
-                // Left click and the platform popup trigger both open the job menu.
-                if (SwingUtilities.isLeftMouseButton(event) || event.isPopupTrigger) showMenu()
+                when {
+                    event.isPopupTrigger -> showMenu()
+                    SwingUtilities.isLeftMouseButton(event) && !event.isControlDown -> runOrShowMenu()
+                }
             }
             override fun mouseReleased(event: MouseEvent) {
                 if (event.isPopupTrigger) showMenu()
@@ -133,7 +138,8 @@ class JobChip : JBPanel<JobChip>(BorderLayout()) {
             label.foreground = statusColor(runtime.status)
             label.icon = if (runtime.isBusy()) AnimatedIcon.Default.INSTANCE else null
         }
-        toolTipText = listOfNotNull(job.name, statusDescription(runtime)).joinToString(" · ")
+        val hint = if (runtime.isActive()) "Click or right-click for actions" else "Click to run · right-click for actions"
+        toolTipText = "<html>" + listOfNotNull(job.name, statusDescription(runtime)).joinToString(" · ") + "<br><small>$hint</small></html>"
         revalidate()
         repaint()
     }
@@ -141,6 +147,15 @@ class JobChip : JBPanel<JobChip>(BorderLayout()) {
     override fun removeNotify() {
         spinner.stop()
         super.removeNotify()
+    }
+
+    /** Starts an idle job (asking for a variant first when it has any); a running one opens its menu instead. */
+    private fun runOrShowMenu() {
+        val project = project ?: return
+        val job = job ?: return
+        val actions = JobActions.get(project)
+        if (JobRuntimeManager.get(project).runtime(job).isActive()) actions.showJobMenu(job, this)
+        else actions.runInteractive(job, DataManager.getInstance().getDataContext(this), anchor = this)
     }
 
     private fun showMenu() {

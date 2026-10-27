@@ -9,6 +9,9 @@ import com.intellij.openapi.actionSystem.Presentation
 import com.intellij.openapi.actionSystem.ToggleAction
 import com.intellij.openapi.actionSystem.ex.CustomComponentAction
 import com.intellij.openapi.project.DumbAware
+import com.intellij.openapi.project.DumbAwareAction
+import com.intellij.openapi.wm.ToolWindowManager
+import com.intellij.icons.AllIcons
 import com.intellij.openapi.project.Project
 import com.intellij.openapi.util.Key
 import java.util.concurrent.ConcurrentHashMap
@@ -38,14 +41,15 @@ class JobBarMainToolbarGroup : ActionGroup(), DumbAware {
         val project = e?.project ?: return EMPTY_ARRAY
         if (!JobBarMainToolbarSettings.isEnabled(project)) return EMPTY_ARRAY
         // Cached per job so the toolbar keeps the same components between updates.
-        return JobBarService.get(project).jobs()
+        val chips = JobBarService.get(project).jobs()
             .filter { it.enabled }
             .map { job -> chipActions.getOrPut(job.id) { JobChipAction(job.id) } }
-            .toTypedArray()
+        return (chips + toggleToolWindow).toTypedArray()
     }
 
     private companion object {
         val chipActions = ConcurrentHashMap<String, JobChipAction>()
+        val toggleToolWindow = ToggleJobBarToolWindowAction()
     }
 }
 
@@ -75,5 +79,15 @@ private class JobChipAction(private val jobId: String) : AnAction(), CustomCompo
     private companion object {
         val PROJECT = Key.create<Project>("JobBar.project")
         val JOB = Key.create<JobDefinition>("JobBar.job")
+    }
+}
+
+/** Shows the Job Bar tool window, or hides it when it is already visible. */
+class ToggleJobBarToolWindowAction : DumbAwareAction("Job Bar", "Show or hide the Job Bar tool window", AllIcons.Actions.ListFiles) {
+    override fun getActionUpdateThread() = ActionUpdateThread.EDT
+
+    override fun actionPerformed(e: AnActionEvent) {
+        val toolWindow = e.project?.let { ToolWindowManager.getInstance(it).getToolWindow("Job Bar") } ?: return
+        if (toolWindow.isVisible) toolWindow.hide() else toolWindow.activate(null)
     }
 }
