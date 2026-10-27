@@ -66,7 +66,9 @@ data class JobRuntime(
     // Groups: the members being launched one after another (null = no launch in progress).
     var groupLaunch: GroupLaunch? = null,
     var groupRestartPending: Boolean = false,
-    var groupSummary: String = ""
+    var groupSummary: String = "",
+    // Incremented on every start, so a delayed reset never touches a newer run.
+    var runId: Int = 0
 ) {
     val inSequence: Boolean get() = sequenceIndex in sequence.indices
 
@@ -79,6 +81,8 @@ data class JobRuntime(
 /** A group launch in progress: [index] is the member being started or waited for. */
 class GroupLaunch(val members: List<GroupMember>, val sequential: Boolean) {
     var index = 0
+    // Parallel launches remember finished members: a one-shot success fades back to idle after a while.
+    val completed = HashSet<String>()
 }
 
 @Service(Service.Level.PROJECT)
@@ -111,6 +115,7 @@ class JobRuntimeManager(private val project: Project) : Disposable {
         if (!job.enabled || job.isGroup || isProcessAlive(runtime)) return
         if (!continueSequence) runtime.clearSequence()
         runtime.readyNotified = false
+        runtime.runId++
 
         val command = resolveCommand(job, variant)
         val console = prepareConsole(job, runtime)
@@ -159,6 +164,7 @@ class JobRuntimeManager(private val project: Project) : Disposable {
                         else -> JobRuntimeStatus.STOPPED
                     }
                     if (runtime.inSequence) advanceSequence(job, runtime, console)
+                    if (runtime.status == JobRuntimeStatus.SUCCESS) fadeSuccess(runtime)
                     fireChanged()
                 }
             })
@@ -318,6 +324,17 @@ class JobRuntimeManager(private val project: Project) : Disposable {
         override fun actionPerformed(e: AnActionEvent) { jobById(jobId)?.let(::stop) }
     }
 
+    /** A one-shot success is shown briefly and then goes back to idle; errors stay until the next run. */
+    private fun fadeSuccess(runtime: JobRuntime) {
+        val run = runtime.runId
+        AppExecutorUtil.getAppScheduledExecutorService().schedule({
+            if (runtime.runId == run && runtime.status == JobRuntimeStatus.SUCCESS) {
+                runtime.status = JobRuntimeStatus.IDLE
+                fireChanged()
+            }
+        }, SUCCESS_DISPLAY_SECONDS, TimeUnit.SECONDS)
+    }
+
     // ---- Readiness by port / URL --------------------------------------------------------------------------
 
     private fun startReadyCheck(job: JobDefinition, runtime: JobRuntime, handler: KillableColoredProcessHandler) {
@@ -448,9 +465,10 @@ class JobRuntimeManager(private val project: Project) : Disposable {
         val pending = launch.members.drop(launch.index).mapNotNull { member -> jobById(member.jobId)?.let { member to it } }
         if (!launch.sequential) {
             val jobs = launch.members.mapNotNull { jobById(it.jobId) }
+            jobs.filter(::memberDone).forEach { launch.completed += it.id }
             when {
-                jobs.any(::memberFailed) -> finishGroup(runtime, success = false)
-                jobs.all(::memberDone) -> finishGroup(runtime, success = true)
+                jobs.any { it.id !in launch.completed && memberFailed(it) } -> finishGroup(runtime, success = false)
+                jobs.all { it.id in launch.completed } -> finishGroup(runtime, success = true)
             }
             return
         }
@@ -606,6 +624,8 @@ class JobRuntimeManager(private val project: Project) : Disposable {
     }
 
     companion object {
+        private const val SUCCESS_DISPLAY_SECONDS = 5L
+
         fun get(project: Project): JobRuntimeManager = project.service()
     }
 }
