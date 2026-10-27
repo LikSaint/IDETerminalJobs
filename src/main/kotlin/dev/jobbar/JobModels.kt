@@ -1,5 +1,6 @@
 package dev.jobbar
 
+import com.intellij.openapi.util.text.NaturalComparator
 import java.util.UUID
 
 enum class JobRunMode(val label: String) {
@@ -23,6 +24,25 @@ enum class JobType(val label: String) {
     override fun toString(): String = label
 }
 
+enum class VariantSortOrder(val label: String) {
+    LABEL_ASC("Label A → Z"),
+    LABEL_DESC("Label Z → A"),
+    VALUE_ASC("Value A → Z"),
+    VALUE_DESC("Value Z → A");
+
+    fun comparator(): Comparator<JobVariant> {
+        val natural = NaturalComparator.INSTANCE
+        return when (this) {
+            LABEL_ASC -> compareBy(natural) { it.label }
+            LABEL_DESC -> compareByDescending(natural) { it.label }
+            VALUE_ASC -> compareBy(natural) { it.value }
+            VALUE_DESC -> compareByDescending(natural) { it.value }
+        }
+    }
+
+    override fun toString(): String = label
+}
+
 data class JobVariant(
     var label: String = "",
     var value: String = ""
@@ -39,6 +59,9 @@ data class JobDefinition(
     var parameterName: String = "",
     var variants: MutableList<JobVariant> = mutableListOf(),
     var runAllVariants: Boolean = false,
+    // Variants keep their custom order unless auto-sort is on; the order is the last one picked.
+    var variantSortOrder: VariantSortOrder = VariantSortOrder.LABEL_ASC,
+    var autoSortVariants: Boolean = false,
     var busyPatterns: String = "",
     var errorPatterns: String = "",
     var recoveryPatterns: String = ""

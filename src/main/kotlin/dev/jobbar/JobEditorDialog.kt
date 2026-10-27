@@ -1,6 +1,15 @@
 package dev.jobbar
 
+import com.intellij.icons.AllIcons
+import com.intellij.openapi.actionSystem.ActionUpdateThread
+import com.intellij.openapi.actionSystem.AnActionEvent
+import com.intellij.openapi.actionSystem.DefaultActionGroup
+import com.intellij.openapi.actionSystem.ex.CheckboxAction
+import com.intellij.openapi.project.DumbAwareAction
 import com.intellij.openapi.project.Project
+import com.intellij.openapi.ui.popup.JBPopupFactory
+import com.intellij.util.ui.EditableModel
+import javax.swing.SwingUtilities
 import com.intellij.openapi.ui.ComboBox
 import com.intellij.openapi.ui.DialogWrapper
 import com.intellij.openapi.ui.Messages
@@ -39,10 +48,17 @@ class JobEditorDialog(
     private val busyArea = JBTextArea(source?.busyPatterns ?: "", 5, 48)
     private val errorsArea = JBTextArea(source?.errorPatterns ?: "", 7, 48)
     private val recoveryArea = JBTextArea(source?.recoveryPatterns ?: "", 7, 48)
-    private val variantsModel = object : DefaultTableModel(arrayOf("Label", "Value / suffix"), 0) {
+    // EditableModel enables the decorator's Move Up / Move Down buttons for a custom order.
+    private val variantsModel = object : DefaultTableModel(arrayOf("Label", "Value / suffix"), 0), EditableModel {
         override fun isCellEditable(row: Int, column: Int): Boolean = true
+        override fun addRow() = addRow(arrayOf("", ""))
+        override fun exchangeRows(oldIndex: Int, newIndex: Int) = moveRow(oldIndex, oldIndex, newIndex)
+        override fun canExchangeRows(oldIndex: Int, newIndex: Int): Boolean = !autoSort
     }
     private val variantsTable = JBTable(variantsModel)
+    private var sortOrder = source?.variantSortOrder ?: VariantSortOrder.LABEL_ASC
+    private var autoSort = source?.autoSortVariants ?: false
+    private var sorting = false
 
     init {
         title = if (source == null) "Create Job" else "Edit Job"
@@ -58,6 +74,13 @@ class JobEditorDialog(
         // Only one-shot commands finish with a success that can trigger the next variant.
         runAllVariants.isEnabled = modeBox.selectedItem == JobRunMode.ONE_SHOT
         modeBox.addActionListener { runAllVariants.isEnabled = modeBox.selectedItem == JobRunMode.ONE_SHOT }
+        // With auto-sort on, re-sort after each edit. Deferred so a cell editor is never moved under the user.
+        variantsModel.addTableModelListener {
+            if (autoSort && !sorting) SwingUtilities.invokeLater { if (!variantsTable.isEditing) sortVariants() }
+        }
+        variantsTable.addPropertyChangeListener("tableCellEditor") {
+            if (autoSort && !variantsTable.isEditing) SwingUtilities.invokeLater { sortVariants() }
+        }
         init()
     }
 
@@ -73,8 +96,18 @@ class JobEditorDialog(
             .panel
 
         val parametersTable = ToolbarDecorator.createDecorator(variantsTable)
-            .setAddAction { variantsModel.addRow(arrayOf("", "")) }
+            .setAddAction {
+                variantsModel.addRow(arrayOf("", ""))
+                val row = variantsModel.rowCount - 1
+                variantsTable.selectionModel.setSelectionInterval(row, row)
+                variantsTable.editCellAt(row, 0)
+                variantsTable.editorComponent?.requestFocusInWindow()
+            }
             .setRemoveAction { if (variantsTable.selectedRow >= 0) variantsModel.removeRow(variantsTable.selectedRow) }
+            .setMoveUpActionUpdater { !autoSort }
+            .setMoveDownActionUpdater { !autoSort }
+            .addExtraAction(SortVariantsAction())
+            .addExtraAction(AutoSortAction())
             .createPanel()
         val parameters = FormBuilder.createFormBuilder()
             .addLabeledComponent("Parameter name:", parameterField)
@@ -113,6 +146,62 @@ class JobEditorDialog(
         }
     }
 
+    private fun sortVariants() {
+        if (sorting) return
+        if (variantsTable.isEditing) variantsTable.cellEditor?.stopCellEditing()
+        val rows = (0 until variantsModel.rowCount).map {
+            JobVariant(variantsModel.getValueAt(it, 0)?.toString().orEmpty(), variantsModel.getValueAt(it, 1)?.toString().orEmpty())
+        }
+        val sorted = rows.sortedWith(sortOrder.comparator())
+        if (sorted == rows) return
+        val selected = variantsTable.selectedRow.takeIf { it >= 0 }?.let { rows[it] }
+        sorting = true
+        try {
+            variantsModel.rowCount = 0
+            sorted.forEach { variantsModel.addRow(arrayOf(it.label, it.value)) }
+        } finally {
+            sorting = false
+        }
+        selected?.let { sorted.indexOf(it) }?.takeIf { it >= 0 }?.let { variantsTable.selectionModel.setSelectionInterval(it, it) }
+    }
+
+    /** Sorts once by the picked order; the user can reorder freely afterwards unless auto-sort is on. */
+    private inner class SortVariantsAction : DumbAwareAction("Sort Variants…", "Sort the variants", AllIcons.ObjectBrowser.Sorted) {
+        override fun getActionUpdateThread() = ActionUpdateThread.EDT
+        override fun update(e: AnActionEvent) { e.presentation.isEnabled = variantsModel.rowCount > 1 || autoSort }
+
+        override fun actionPerformed(e: AnActionEvent) {
+            val options = DefaultActionGroup(VariantSortOrder.entries.map { order ->
+                object : DumbAwareAction(order.label, null, if (order == sortOrder) AllIcons.Actions.Checked else null) {
+                    override fun actionPerformed(e: AnActionEvent) {
+                        sortOrder = order
+                        sortVariants()
+                    }
+                }
+            })
+            val popup = JBPopupFactory.getInstance().createActionGroupPopup(
+                "Sort Variants", options, e.dataContext, JBPopupFactory.ActionSelectionAid.SPEEDSEARCH, true
+            )
+            val source = e.inputEvent?.component
+            if (source != null) popup.showUnderneathOf(source) else popup.showInBestPositionFor(e.dataContext)
+        }
+    }
+
+    private inner class AutoSortAction : CheckboxAction("Auto-sort", "Always keep variants in the selected sort order", null) {
+        override fun getActionUpdateThread() = ActionUpdateThread.EDT
+        override fun isSelected(e: AnActionEvent): Boolean = autoSort
+
+        override fun update(e: AnActionEvent) {
+            super.update(e)
+            e.presentation.text = if (autoSort) "Auto-sort: ${sortOrder.label}" else "Auto-sort"
+        }
+
+        override fun setSelected(e: AnActionEvent, state: Boolean) {
+            autoSort = state
+            if (state) sortVariants()
+        }
+    }
+
     private fun applyPreset(type: JobType) {
         val preset = JobPresets.forType(type)
         busyArea.text = preset.busy
@@ -141,8 +230,10 @@ class JobEditorDialog(
             val label = variantsModel.getValueAt(row, 0)?.toString()?.trim().orEmpty()
             val value = variantsModel.getValueAt(row, 1)?.toString()?.trim().orEmpty()
             if (label.isBlank() || value.isBlank()) null else JobVariant(label, value)
-        }.toMutableList(),
+        }.let { if (autoSort) it.sortedWith(sortOrder.comparator()) else it }.toMutableList(),
         runAllVariants = runAllVariants.isSelected,
+        variantSortOrder = sortOrder,
+        autoSortVariants = autoSort,
         busyPatterns = busyArea.text.trim(),
         errorPatterns = errorsArea.text.trim(),
         recoveryPatterns = recoveryArea.text.trim()

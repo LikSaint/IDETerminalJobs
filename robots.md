@@ -21,7 +21,9 @@ src/main/kotlin/dev/jobbar/
   JobRuntimeManager.kt      запуск процессов, консоли, вычисление статуса по паттернам, «Run all»
   JobBarToolWindowFactory.kt  UI tool window: строки джоб, индикатор статуса, тулбар, контекстное меню,
                             Add/Run/Stop/Restart/Edit/Import/Export actions (класс JobBarView и inner-классы actions)
-  JobEditorDialog.kt        диалог создания/редактирования (вкладки General / Parameters / Status)
+  JobEditorDialog.kt        диалог создания/редактирования (вкладки General / Parameters / Status);
+                            таблица вариантов — ToolbarDecorator над EditableModel (add/remove/↑/↓),
+                            плюс SortVariantsAction (popup сортировок) и AutoSortAction (CheckboxAction)
 ```
 
 ## Ключевые понятия
@@ -31,6 +33,7 @@ src/main/kotlin/dev/jobbar/
 - `JobRunMode`: `ONE_SHOT` (команда завершается) / `TRACKED` (долгоживущий процесс).
 - `variants` + `parameterName`: плейсхолдер `${parameterName}` в команде заменяется значением варианта. Если плейсхолдера нет, значение дописывается в конец (`resolveCommand`).
 - `runAllVariants` — показывать пункт «All» в popup вариантов. Имеет смысл только для `ONE_SHOT`.
+- `variantSortOrder` (enum `VariantSortOrder`, сравнение через `NaturalComparator`) + `autoSortVariants`. Порядок `variants` в модели — тот, в котором они показываются и запускаются. Сортировка применяется в `JobEditorDialog`: разово через кнопку, а при `autoSortVariants` — после каждой правки и ещё раз в `result()`. Runtime ничего не сортирует.
 - `JobPresets.forType` — паттерны по умолчанию для каждого `JobType`.
 
 ### Runtime (`JobRuntimeManager.kt`)
