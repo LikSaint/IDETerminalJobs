@@ -149,7 +149,7 @@ object JobIcons {
     fun selectedKey(comboBox: ComboBox<String>): String = (comboBox.selectedItem as? String)?.takeIf { it != CHOOSE_CUSTOM }.orEmpty()
 }
 
-/** [base] with a small bright status dot in its bottom-left corner (no dot when [dotColor] is null). */
+/** [base] with a small bright status dot in its bottom-right corner (no dot when [dotColor] is null). */
 class StatusBadgeIcon(private val base: Icon, private val dotColor: Color?) : Icon {
     override fun getIconWidth(): Int = base.iconWidth
     override fun getIconHeight(): Int = base.iconHeight
@@ -164,7 +164,7 @@ class StatusBadgeIcon(private val base: Icon, private val dotColor: Color?) : Ic
         val ring = JBUIScale.scale(1f)
         val outer = dot + ring * 2
         // Kept inside the icon bounds so toolbars never clip it.
-        val left = x.toFloat()
+        val left = x + iconWidth - outer
         val top = y + iconHeight - outer
         // The ring takes the color of what is behind the icon, cutting the dot out of the glyph.
         g.color = backgroundBehind(component)
