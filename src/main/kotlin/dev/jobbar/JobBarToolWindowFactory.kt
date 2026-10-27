@@ -1,0 +1,434 @@
+package dev.jobbar
+
+import com.intellij.icons.AllIcons
+import com.intellij.openapi.actionSystem.ActionManager
+import com.intellij.openapi.actionSystem.ActionPlaces
+import com.intellij.openapi.actionSystem.AnAction
+import com.intellij.openapi.actionSystem.AnActionEvent
+import com.intellij.openapi.actionSystem.ActionGroup
+import com.intellij.openapi.actionSystem.DefaultActionGroup
+import com.intellij.openapi.actionSystem.Presentation
+import com.intellij.openapi.actionSystem.ex.ActionUtil
+import com.intellij.openapi.project.Project
+import com.intellij.openapi.project.DumbAwareAction
+import com.intellij.openapi.ui.Messages
+import com.intellij.openapi.ui.popup.JBPopupFactory
+import com.intellij.openapi.fileChooser.FileChooserFactory
+import com.intellij.openapi.fileChooser.FileSaverDescriptor
+import com.intellij.openapi.util.NlsActions
+import com.intellij.openapi.wm.ToolWindow
+import com.intellij.openapi.wm.ToolWindowFactory
+import com.intellij.ui.SimpleColoredComponent
+import com.intellij.ui.SimpleTextAttributes
+import com.intellij.ui.AnimatedIcon
+import com.intellij.ui.components.JBLabel
+import com.intellij.ui.components.JBPanel
+import com.intellij.ui.components.JBScrollPane
+import com.intellij.ui.content.ContentFactory
+import com.intellij.util.ui.JBUI
+import com.intellij.util.ui.UIUtil
+import com.intellij.openapi.vfs.LocalFileSystem
+import com.jetbrains.JBRFileDialog
+import java.awt.BorderLayout
+import java.awt.Component
+import java.awt.Color
+import java.awt.Container
+import java.awt.Dimension
+import java.awt.FileDialog
+import java.awt.Frame
+import java.awt.Graphics
+import java.awt.Graphics2D
+import java.awt.Point
+import java.awt.Rectangle
+import java.awt.RenderingHints
+import java.awt.event.MouseAdapter
+import java.awt.event.MouseEvent
+import java.nio.charset.StandardCharsets
+import java.nio.file.Files
+import javax.swing.Box
+import javax.swing.BoxLayout
+import javax.swing.Icon
+import javax.swing.JComponent
+import javax.swing.JPanel
+import javax.swing.SwingConstants
+import javax.swing.SwingUtilities
+import javax.swing.Scrollable
+import javax.swing.ScrollPaneConstants
+
+class JobBarToolWindowFactory : ToolWindowFactory {
+    override fun createToolWindowContent(project: Project, toolWindow: ToolWindow) {
+        val view = JobBarView(project)
+        toolWindow.setAdditionalGearActions(view.gearActions())
+        val content = ContentFactory.getInstance().createContent(view.component, "Jobs", false).apply {
+            isCloseable = false
+        }
+        toolWindow.contentManager.addContent(content)
+    }
+}
+
+private class JobBarView(private val project: Project) {
+    private val service = JobBarService.get(project)
+    private val runtimes = JobRuntimeManager.get(project)
+    private val rows = object : JPanel(), Scrollable {
+        override fun getPreferredScrollableViewportSize(): Dimension = preferredSize
+        override fun getScrollableUnitIncrement(visibleRect: Rectangle, orientation: Int, direction: Int): Int = JBUI.scale(32)
+        override fun getScrollableBlockIncrement(visibleRect: Rectangle, orientation: Int, direction: Int): Int = visibleRect.height
+        override fun getScrollableTracksViewportWidth(): Boolean = true
+        override fun getScrollableTracksViewportHeight(): Boolean = false
+    }.apply {
+        layout = BoxLayout(this, BoxLayout.Y_AXIS)
+        border = JBUI.Borders.empty(4)
+    }
+    private var hoveredRow: JComponent? = null
+
+    val component: JComponent = com.intellij.openapi.ui.SimpleToolWindowPanel(true, true).apply {
+        setContent(JBScrollPane(
+            rows,
+            ScrollPaneConstants.VERTICAL_SCROLLBAR_AS_NEEDED,
+            ScrollPaneConstants.HORIZONTAL_SCROLLBAR_NEVER
+        ).apply { border = JBUI.Borders.empty() })
+    }
+
+    fun gearActions(): ActionGroup = DefaultActionGroup().apply {
+        add(AddJobAction())
+        addSeparator()
+        add(ImportJobsAction())
+        add(ExportJobsAction())
+    }
+
+    init {
+        service.addListener(::refresh)
+        runtimes.addListener(::refresh)
+        refresh()
+    }
+
+    private fun refresh() {
+        setHoveredRow(null)
+        rows.removeAll()
+        if (service.jobs().isEmpty()) {
+            rows.add(JBLabel("No jobs yet. Use ⋮ → Add Job to create one.", SwingConstants.CENTER).apply {
+                alignmentX = Component.CENTER_ALIGNMENT
+                border = JBUI.Borders.empty(24)
+            })
+        } else {
+            service.jobs().forEach { rows.add(createRow(it)) }
+            rows.add(Box.createVerticalGlue())
+        }
+        rows.revalidate()
+        rows.repaint()
+    }
+
+    private fun createRow(job: JobDefinition): JComponent {
+        val runtime = runtimes.runtime(job)
+        val row = object : JBPanel<JBPanel<*>>(BorderLayout()) {
+            override fun paintComponent(graphics: Graphics) {
+                super.paintComponent(graphics)
+                if (getClientProperty("JobBar.hovered") == true) {
+                    val g = graphics.create() as Graphics2D
+                    g.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON)
+                    g.color = JBUI.CurrentTheme.Tree.background(true, false)
+                    val inset = JBUI.scale(4)
+                    val arc = JBUI.CurrentTheme.Tree.ARC.get()
+                    g.fillRoundRect(inset, 1, width - inset * 2, height - 2, arc, arc)
+                    g.dispose()
+                }
+            }
+        }.apply {
+            border = JBUI.Borders.empty(1, 6)
+            preferredSize = Dimension(JBUI.scale(320), JBUI.scale(32))
+            minimumSize = Dimension(0, JBUI.scale(32))
+            maximumSize = Dimension(Int.MAX_VALUE, JBUI.scale(32))
+            isOpaque = false
+        }
+        val title = SimpleColoredComponent().apply {
+            append(job.name, SimpleTextAttributes.REGULAR_ATTRIBUTES)
+            toolTipText = runtime.lastCommand.ifBlank { job.command }
+        }
+        row.add(title, BorderLayout.CENTER)
+
+        val actions = DefaultActionGroup()
+        if (runtime.inSequence) {
+            actions.add(StopJobAction(job))
+        } else if (job.runMode == JobRunMode.TRACKED && runtime.status in activeStatuses) {
+            actions.add(StopJobAction(job))
+            actions.add(RestartJobAction(job))
+        } else {
+            actions.add(RunJobAction(job))
+        }
+        actions.add(OpenConsoleAction(job))
+        actions.add(EditJobAction(job))
+        val toolbar = ActionManager.getInstance().createActionToolbar("JobBar.JobRow", actions, true)
+        toolbar.targetComponent = row
+        toolbar.component.border = JBUI.Borders.empty()
+        toolbar.component.preferredSize = Dimension(JBUI.scale(112), JBUI.scale(28))
+        toolbar.component.minimumSize = Dimension(JBUI.scale(112), JBUI.scale(28))
+        toolbar.component.maximumSize = Dimension(JBUI.scale(112), JBUI.scale(28))
+        val controls = JPanel(BorderLayout()).apply {
+            isOpaque = false
+            preferredSize = Dimension(JBUI.scale(132), JBUI.scale(28))
+            minimumSize = Dimension(JBUI.scale(132), JBUI.scale(28))
+            maximumSize = Dimension(JBUI.scale(132), JBUI.scale(28))
+            add(statusIndicator(runtime), BorderLayout.WEST)
+            add(toolbar.component, BorderLayout.CENTER)
+        }
+        row.add(controls, BorderLayout.EAST)
+        UIUtil.setNotOpaqueRecursively(row)
+        installRowHover(row, row)
+
+        row.addMouseListener(object : MouseAdapter() {
+            override fun mousePressed(event: MouseEvent) = maybePopup(event)
+            override fun mouseReleased(event: MouseEvent) = maybePopup(event)
+            private fun maybePopup(event: MouseEvent) {
+                if (!event.isPopupTrigger) return
+                ActionManager.getInstance().createActionPopupMenu(
+                    ActionPlaces.POPUP,
+                    contextActions(job)
+                ).component.show(event.component, event.x, event.y)
+            }
+        })
+        title.addMouseListener(object : MouseAdapter() {
+            override fun mousePressed(event: MouseEvent) = maybePopup(event)
+            override fun mouseReleased(event: MouseEvent) = maybePopup(event)
+            private fun maybePopup(event: MouseEvent) {
+                if (!event.isPopupTrigger) return
+                ActionManager.getInstance().createActionPopupMenu(
+                    ActionPlaces.POPUP,
+                    contextActions(job)
+                ).component.show(event.component, event.x, event.y)
+            }
+        })
+        return row
+    }
+
+    private fun installRowHover(row: JComponent, component: Component) {
+        val listener = object : MouseAdapter() {
+            override fun mouseEntered(event: MouseEvent) {
+                setHoveredRow(row)
+            }
+
+            override fun mouseExited(event: MouseEvent) {
+                val screenPoint = Point(event.xOnScreen, event.yOnScreen)
+                SwingUtilities.invokeLater {
+                    SwingUtilities.convertPointFromScreen(screenPoint, row)
+                    if (!row.contains(screenPoint) && hoveredRow === row) setHoveredRow(null)
+                }
+            }
+        }
+        component.addMouseListener(listener)
+        if (component is Container) component.components.forEach { installRowHover(row, it) }
+    }
+
+    private fun setHoveredRow(row: JComponent?) {
+        if (hoveredRow === row) return
+        hoveredRow?.let {
+            it.putClientProperty("JobBar.hovered", false)
+            it.repaint()
+        }
+        hoveredRow = row
+        row?.let {
+            it.putClientProperty("JobBar.hovered", true)
+            it.repaint()
+        }
+    }
+
+    private fun statusIndicator(runtime: JobRuntime): JComponent = JBLabel().apply {
+        horizontalAlignment = SwingConstants.CENTER
+        preferredSize = Dimension(JBUI.scale(20), JBUI.scale(28))
+        minimumSize = preferredSize
+        maximumSize = preferredSize
+        isOpaque = false
+        when (runtime.status) {
+            JobRuntimeStatus.STARTING -> {
+                icon = AnimatedIcon.Default.INSTANCE
+                toolTipText = "Starting · waiting for a status match"
+            }
+            JobRuntimeStatus.RUNNING -> {
+                icon = AnimatedIcon.Default.INSTANCE
+                toolTipText = "Running"
+            }
+            JobRuntimeStatus.READY -> {
+                icon = StatusDotIcon(JBUI.CurrentTheme.ProgressBar.PASSED)
+                toolTipText = "Running and tracked"
+            }
+            JobRuntimeStatus.WARNING -> {
+                icon = StatusDotIcon(JBUI.CurrentTheme.ProgressBar.WARNING)
+                toolTipText = "Running with errors"
+            }
+            JobRuntimeStatus.SUCCESS -> {
+                icon = StatusDotIcon(JBUI.CurrentTheme.ProgressBar.PASSED)
+                toolTipText = "Completed successfully"
+            }
+            JobRuntimeStatus.ERROR -> {
+                icon = StatusDotIcon(JBUI.CurrentTheme.ProgressBar.FAILED)
+                toolTipText = "Failed"
+            }
+            JobRuntimeStatus.IDLE, JobRuntimeStatus.STOPPED -> Unit
+        }
+        if (runtime.inSequence) {
+            val current = runtime.sequence[runtime.sequenceIndex]
+            toolTipText = "Running all · ${runtime.sequenceIndex + 1}/${runtime.sequence.size} · ${current.label}"
+        }
+    }
+
+    private fun contextActions(job: JobDefinition): DefaultActionGroup = DefaultActionGroup().apply {
+        add(RunJobAction(job, "Run…"))
+        val runtime = runtimes.runtime(job)
+        if (runtime.inSequence || runtime.status in activeStatuses) add(StopJobAction(job))
+        if (!runtime.inSequence && runtime.status in activeStatuses) add(RestartJobAction(job))
+        add(OpenConsoleAction(job))
+        addSeparator()
+        val index = service.jobs().indexOfFirst { it.id == job.id }
+        add(object : DumbAwareAction("Move Up", "Move job up", AllIcons.Actions.MoveUp) {
+            override fun update(e: AnActionEvent) { e.presentation.isEnabled = index > 0 }
+            override fun actionPerformed(e: AnActionEvent) = service.moveBy(job.id, -1)
+        })
+        add(object : DumbAwareAction("Move Down", "Move job down", AllIcons.Actions.MoveDown) {
+            override fun update(e: AnActionEvent) { e.presentation.isEnabled = index >= 0 && index < service.jobs().lastIndex }
+            override fun actionPerformed(e: AnActionEvent) = service.moveBy(job.id, 1)
+        })
+        addSeparator()
+        add(EditJobAction(job))
+        add(object : DumbAwareAction("Copy Job", "Create a copy of this job", AllIcons.Actions.Copy) {
+            override fun actionPerformed(e: AnActionEvent) = service.duplicate(job)
+        })
+        add(object : DumbAwareAction("Delete Job", null, AllIcons.General.Remove) {
+            override fun actionPerformed(e: AnActionEvent) {
+                if (Messages.showYesNoDialog(project, "Delete '${job.name}'?", "Delete Job", AllIcons.General.QuestionDialog) == Messages.YES) {
+                    runtimes.stop(job)
+                    service.delete(job)
+                }
+            }
+        })
+    }
+
+    private inner class AddJobAction : DumbAwareAction("Add Job", "Create a command job", AllIcons.General.Add) {
+        override fun actionPerformed(e: AnActionEvent) {
+            val dialog = JobEditorDialog(project)
+            if (dialog.showAndGet()) service.save(dialog.result())
+        }
+    }
+
+    private inner class ExportJobsAction : DumbAwareAction("Export Jobs…", "Export all Job Bar jobs", AllIcons.Actions.MenuSaveall) {
+        override fun actionPerformed(e: AnActionEvent) {
+            val descriptor = FileSaverDescriptor("Export Job Bar Jobs", "Choose where to save the job definitions", "xml")
+            val wrapper = FileChooserFactory.getInstance().createSaveFileDialog(descriptor, project).save("jobbar-jobs.xml") ?: return
+            runCatching {
+                val path = wrapper.file.toPath()
+                path.parent?.let { Files.createDirectories(it) }
+                Files.writeString(path, service.exportXml(), StandardCharsets.UTF_8)
+                LocalFileSystem.getInstance().refreshAndFindFileByNioFile(path)
+            }
+                .onFailure { Messages.showErrorDialog(project, it.message ?: "Unable to export jobs", "Export Jobs") }
+        }
+    }
+
+    private inner class ImportJobsAction : DumbAwareAction("Import Jobs…", "Import Job Bar jobs", AllIcons.Actions.MenuOpen) {
+        override fun actionPerformed(e: AnActionEvent) {
+            // The platform chooser resolves the selection through VFS and the descriptor, which
+            // rejected valid files ("unable to locate"). A plain AWT dialog returns a real File.
+            // The IDE runs with -Dapple.awt.fileDialogForDirectories=true, which turns a plain
+            // macOS FileDialog into a folder picker (all files greyed out). Like the platform's
+            // own native chooser, explicitly request file selection through JBR hints.
+            val title = "Import Job Bar Jobs"
+            val dialog = when (val owner = SwingUtilities.getWindowAncestor(component)) {
+                is java.awt.Dialog -> FileDialog(owner, title, FileDialog.LOAD)
+                else -> FileDialog(owner as? Frame, title, FileDialog.LOAD)
+            }.apply {
+                directory = project.basePath
+                JBRFileDialog.get(this)?.apply {
+                    hints = JBRFileDialog.SELECT_FILES_HINT
+                    setFileFilterExtensions("Job Bar XML", arrayOf("xml"))
+                }
+                isVisible = true
+            }
+            val path = dialog.files.firstOrNull()?.toPath() ?: return
+            try {
+                require(Files.isRegularFile(path)) { "The selected file does not exist: $path" }
+                require(path.fileName.toString().endsWith(".xml", ignoreCase = true)) { "Please choose a Job Bar .xml file: $path" }
+                val xml = Files.readString(path, StandardCharsets.UTF_8)
+                if (Messages.showYesNoDialog(project, "Replace the current jobs with the imported definitions?", "Import Jobs", null) == Messages.YES) {
+                    service.importXml(xml)
+                }
+            } catch (error: Exception) {
+                Messages.showErrorDialog(project, error.message ?: "Unable to import jobs", "Import Jobs")
+            }
+        }
+    }
+
+    private inner class EditJobAction(private val job: JobDefinition) :
+        DumbAwareAction("Edit Job…", "Edit job", AllIcons.Actions.Edit) {
+        override fun actionPerformed(e: AnActionEvent) {
+            val dialog = JobEditorDialog(project, job)
+            if (dialog.showAndGet()) service.save(dialog.result())
+        }
+    }
+
+    private inner class RunJobAction(
+        private val job: JobDefinition,
+        text: String = "Run"
+    ) : DumbAwareAction(text, "Run ${job.name}", AllIcons.Actions.Execute) {
+        override fun update(e: AnActionEvent) {
+            val runtime = runtimes.runtime(job)
+            e.presentation.isEnabled = runtime.status !in activeStatuses
+        }
+
+        override fun actionPerformed(e: AnActionEvent) {
+            if (job.variants.isEmpty()) {
+                runtimes.run(job)
+                return
+            }
+            val variants = DefaultActionGroup().apply {
+                if (job.runAllVariants && job.runMode == JobRunMode.ONE_SHOT && job.variants.size > 1) {
+                    add(object : DumbAwareAction("All", "Run all ${job.variants.size} variants one after another", AllIcons.Actions.RunAll) {
+                        override fun actionPerformed(e: AnActionEvent) = runtimes.runAll(job)
+                    })
+                    addSeparator()
+                }
+                job.variants.forEach { variant ->
+                    add(object : DumbAwareAction(variant.label, variant.value, AllIcons.Actions.Execute) {
+                        override fun actionPerformed(e: AnActionEvent) = runtimes.run(job, variant)
+                    })
+                }
+            }
+            JBPopupFactory.getInstance().createActionGroupPopup(
+                "Run ${job.name}",
+                variants,
+                e.dataContext,
+                JBPopupFactory.ActionSelectionAid.SPEEDSEARCH,
+                true
+            ).showInBestPositionFor(e.dataContext)
+        }
+    }
+
+    private inner class StopJobAction(private val job: JobDefinition) :
+        DumbAwareAction("Stop", "Stop ${job.name}", AllIcons.Actions.Suspend) {
+        override fun actionPerformed(e: AnActionEvent) = runtimes.stop(job)
+    }
+
+    private inner class RestartJobAction(private val job: JobDefinition) :
+        DumbAwareAction("Restart", "Restart ${job.name}", AllIcons.Actions.Restart) {
+        override fun actionPerformed(e: AnActionEvent) = runtimes.restart(job)
+    }
+
+    private inner class OpenConsoleAction(private val job: JobDefinition) :
+        DumbAwareAction("Open Console", "Open command output", AllIcons.Debugger.Console) {
+        override fun actionPerformed(e: AnActionEvent) = runtimes.openConsole(job)
+    }
+
+    companion object {
+        private val activeStatuses = setOf(JobRuntimeStatus.STARTING, JobRuntimeStatus.RUNNING, JobRuntimeStatus.READY, JobRuntimeStatus.WARNING)
+
+        private class StatusDotIcon(private val color: Color) : Icon {
+            override fun getIconWidth(): Int = JBUI.scale(8)
+            override fun getIconHeight(): Int = JBUI.scale(8)
+
+            override fun paintIcon(component: Component?, graphics: Graphics, x: Int, y: Int) {
+                val g = graphics.create() as Graphics2D
+                g.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON)
+                g.color = color
+                g.fillOval(x, y, iconWidth, iconHeight)
+                g.dispose()
+            }
+        }
+    }
+}
