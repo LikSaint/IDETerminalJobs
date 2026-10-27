@@ -160,8 +160,8 @@ class StatusBadgeIcon(private val base: Icon, private val dotColor: Color?) : Ic
         val g = graphics.create() as Graphics2D
         g.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON)
         g.setRenderingHint(RenderingHints.KEY_STROKE_CONTROL, RenderingHints.VALUE_STROKE_PURE)
-        val dot = JBUIScale.scale(5f)
-        val ring = JBUIScale.scale(1.5f)
+        val dot = JBUIScale.scale(3.5f)
+        val ring = JBUIScale.scale(1f)
         val outer = dot + ring * 2
         // Kept inside the icon bounds so toolbars never clip it.
         val left = x.toFloat()
