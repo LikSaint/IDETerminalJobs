@@ -29,6 +29,12 @@ class JobBarService(private val project: Project) : PersistentStateComponent<Job
         changed()
     }
 
+    fun addAll(jobs: List<JobDefinition>) {
+        if (jobs.isEmpty()) return
+        state.jobs.addAll(jobs.map { it.copyDeep() })
+        changed()
+    }
+
     fun delete(job: JobDefinition) {
         state.jobs.removeIf { it.id == job.id }
         changed()

@@ -92,7 +92,11 @@ private class JobBarView(private val project: Project) {
 
     fun gearActions(): ActionGroup = DefaultActionGroup().apply {
         add(AddJobAction())
+        add(AddGroupAction())
+        add(AddFromPackageJsonAction())
+        addSeparator()
         add(ShowInMainToolbarAction())
+        add(JobSoundsToggleAction())
         addSeparator()
         add(ImportJobsAction())
         add(ExportJobsAction())
@@ -143,15 +147,20 @@ private class JobBarView(private val project: Project) {
             isOpaque = false
         }
         val title = SimpleColoredComponent().apply {
-            append(job.name, SimpleTextAttributes.REGULAR_ATTRIBUTES)
-            toolTipText = runtime.lastCommand.ifBlank { job.command }
+            icon = JobIcons.find(job.icon) ?: if (job.isGroup) AllIcons.Nodes.Folder else null
+            append(job.name, if (job.enabled) SimpleTextAttributes.REGULAR_ATTRIBUTES else SimpleTextAttributes.GRAYED_ATTRIBUTES)
+            if (!job.enabled) append("  disabled", SimpleTextAttributes.GRAYED_SMALL_ATTRIBUTES)
+            toolTipText = when {
+                job.isGroup -> "Group: " + job.members.mapNotNull { m -> service.jobs().find { it.id == m.jobId }?.name }.joinToString(if (job.groupSequential) " → " else ", ")
+                else -> runtime.lastCommand.ifBlank { job.command }
+            }
         }
         row.add(title, BorderLayout.CENTER)
 
         val actions = DefaultActionGroup()
         if (runtime.inSequence) {
             actions.add(jobActions.stopAction(job))
-        } else if (job.runMode == JobRunMode.TRACKED && runtime.status in activeStatuses) {
+        } else if ((job.runMode == JobRunMode.TRACKED || job.isGroup) && runtime.isActive()) {
             actions.add(jobActions.stopAction(job))
             actions.add(jobActions.restartAction(job))
         } else {
@@ -245,6 +254,25 @@ private class JobBarView(private val project: Project) {
             else -> StatusDotIcon(statusColor(runtime.status))
         }
         toolTipText = statusDescription(runtime)
+    }
+
+    private inner class AddGroupAction : DumbAwareAction("Add Group", "Create a group that runs several jobs", AllIcons.Nodes.Folder) {
+        override fun actionPerformed(e: AnActionEvent) {
+            val dialog = GroupEditorDialog(project)
+            if (dialog.showAndGet()) service.save(dialog.result())
+        }
+    }
+
+    private inner class AddFromPackageJsonAction : DumbAwareAction("Add from package.json…", "Create jobs from package.json scripts", AllIcons.FileTypes.Json) {
+        override fun actionPerformed(e: AnActionEvent) {
+            val candidates = PackageJsonImport.scan(project, service.jobs())
+            if (candidates.isEmpty()) {
+                Messages.showInfoMessage(project, "No package.json scripts were found in this project.", "Add from package.json")
+                return
+            }
+            val dialog = PackageJsonImportDialog(project, candidates)
+            if (dialog.showAndGet()) service.addAll(dialog.selectedJobs())
+        }
     }
 
     private inner class AddJobAction : DumbAwareAction("Add Job", "Create a command job", AllIcons.General.Add) {

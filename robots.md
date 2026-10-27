@@ -31,6 +31,12 @@ src/main/kotlin/dev/jobbar/
   JobFileLinkFilter.kt      консольный Filter: пути к файлам (с :line:col или (line,col)) → OpenFileHyperlinkInfo
   JobShortcuts.kt           по действию «Run <job>» на джобу (id = JobBar.Run.<job.id>, pluginId dev.jobbar → Keymap | Plugins | Job Bar);
                             sync(project) вызывается из JobBarService.changed() и из JobShortcutsStartup (postStartupActivity)
+  GroupEditorDialog.kt      диалог группы (JobRunMode.GROUP): участники (GroupMember: jobId + variant, "*" = все варианты),
+                            режим groupSequential; редакторы ячеек сами выбирают сохранённый id (таблица показывает имена)
+  PackageJsonImport.kt      поиск package.json (глубина 4, без node_modules и т. п.), менеджер по lock-файлу,
+                            эвристики режима/типа по имени и тексту скрипта; PackageJsonImportDialog — выбор скриптов
+  JobSounds.kt              синтез коротких звуков в коде (javax.sound, без файлов); настройка app-level dev.jobbar.sounds
+  JobIcons.kt               набор иконок джоб (ключ в JobDefinition.icon), comboBox(), StatusBadgeIcon — иконка с точкой статуса
   JobEditorDialog.kt        диалог создания/редактирования (вкладки General / Parameters / Status);
                             таблица вариантов — ToolbarDecorator над EditableModel (add/remove/↑/↓),
                             плюс SortVariantsAction (popup сортировок) и AutoSortAction (CheckboxAction)
@@ -45,6 +51,10 @@ src/main/kotlin/dev/jobbar/
 - `runAllVariants` — показывать пункт «All» в popup вариантов. Имеет смысл только для `ONE_SHOT`.
 - `variantSortOrder` (enum `VariantSortOrder`, сравнение через `NaturalComparator`) + `autoSortVariants`. Порядок `variants` в модели — тот, в котором они показываются и запускаются. Сортировка применяется в `JobEditorDialog`: разово через кнопку, а при `autoSortVariants` — после каждой правки и ещё раз в `result()`. Runtime ничего не сортирует.
 - `JobPresets.forType` — паттерны по умолчанию для каждого `JobType`.
+- `enabled` — выключенные джобы не запускаются (`start()`/`runGroup()` выходят сразу) и фильтруются в тулбаре и `JobShortcuts`.
+- `readyPort` / `readyUrl` (`hasReadyCheck`) — для TRACKED: `startReadyCheck()` раз в секунду проверяет порт/URL на `AppExecutorUtil` и переводит STARTING → READY, после первого успеха опрос прекращается.
+- `icon` / `iconOnly` — ключ из `JobIcons`; с иконкой `JobChip` рисует `StatusBadgeIcon` (точка статуса), текст не красится.
+- Группы — это `JobDefinition` с `runMode = GROUP`, `members`, `groupSequential`; своей команды нет. Вложенные группы запрещены (участник-группа отфильтровывается).
 
 ### Runtime (`JobRuntimeManager.kt`)
 - Project-level сервис. Состояние каждой джобы — в `JobRuntime`, в памяти, ключ — `job.id`.
@@ -61,6 +71,7 @@ src/main/kotlin/dev/jobbar/
   - TRACKED: события сразу меняют статус.
   - ONE_SHOT: события только выставляют `cycleHasError`. Итог считается в `processTerminated`: exit code ≠ 0 → ERROR; иначе `cycleHasError` → ERROR; иначе SUCCESS.
 - «Run all»: `runtime.sequence` + `sequenceIndex` (флаг `inSequence`). `advanceSequence()` вызывается из `processTerminated`. При SUCCESS следующий вариант запускается через `invokeLater` с проверкой, что прогон не остановили. При ERROR или STOPPED прогон прекращается, в консоль пишется итог. Между вариантами статус держится `RUNNING`, чтобы лоадер не мигал.
+- Группы и звуки обрабатываются в `fireChanged()` на EDT перед уведомлением слушателей: `refreshGroups()` двигает запуск группы (`GroupLaunch`: последовательный — по одному участнику, пока `memberDone`, стоп на `memberFailed`) и пересчитывает статус группы из статусов участников (`groupSummary` = «N/M ready»); `playStatusSounds()` сравнивает `status` с `notifiedStatus`. Участники запускающейся группы молчат, итог озвучивает `finishGroup()`.
 - Об изменениях UI узнаёт через `addListener` / `fireChanged()`, который вызывается на EDT через `invokeLater`. `fireChanged()` и `JobBarService.changed()` также вызывают `ActivityTracker.getInstance().inc()`: без этого ярлыки в главном тулбаре (это action-компоненты) обновлялись бы только по таймеру тулбара.
 - Главный тулбар: `JobChipAction` кешируются по `job.id`, чтобы тулбар не пересоздавал компоненты при каждом обновлении. `update()` кладёт project/job в client properties у presentation, а `updateCustomComponent()` вызывает `JobChip.bind()`. Группа `MainToolbarRight` есть только в New UI.
 

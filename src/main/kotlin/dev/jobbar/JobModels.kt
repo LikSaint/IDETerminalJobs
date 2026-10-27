@@ -6,7 +6,9 @@ import java.util.UUID
 
 enum class JobRunMode(val label: String) {
     ONE_SHOT("One-shot command"),
-    TRACKED("Tracked process");
+    TRACKED("Tracked process"),
+    // A group runs other jobs (in parallel or one after another) and has no command of its own.
+    GROUP("Group");
 
     override fun toString(): String = label
 }
@@ -49,11 +51,24 @@ data class JobVariant(
     var value: String = ""
 )
 
+/** A group member: a job id plus an optional variant value ("" = none, [ALL_VARIANTS] = run all variants). */
+data class GroupMember(
+    var jobId: String = "",
+    var variant: String = ""
+) {
+    companion object {
+        const val ALL_VARIANTS = "*"
+    }
+}
+
 data class JobDefinition(
     var id: String = UUID.randomUUID().toString(),
     var name: String = "New job",
     // Compact view: label shown instead of the name.
     var shortName: String = "",
+    // Optional icon key from JobIcons; with an icon the status shows as a dot on it, and the text can be hidden.
+    var icon: String = "",
+    var iconOnly: Boolean = false,
     var command: String = "",
     var workingDirectory: String = "\$PROJECT_DIR\$",
     var runMode: JobRunMode = JobRunMode.ONE_SHOT,
@@ -67,9 +82,26 @@ data class JobDefinition(
     var autoSortVariants: Boolean = false,
     var busyPatterns: String = "",
     var errorPatterns: String = "",
-    var recoveryPatterns: String = ""
+    var recoveryPatterns: String = "",
+    // Disabled jobs stay in the list but are hidden from toolbars and shortcuts and cannot run.
+    var enabled: Boolean = true,
+    // Tracked jobs: also ready once this local port accepts connections / this URL responds (0 / "" = off).
+    var readyPort: Int = 0,
+    var readyUrl: String = "",
+    // Groups only.
+    var members: MutableList<GroupMember> = mutableListOf(),
+    var groupSequential: Boolean = true
 ) {
-    fun copyDeep(): JobDefinition = copy(variants = variants.map { it.copy() }.toMutableList())
+    fun copyDeep(): JobDefinition = copy(
+        variants = variants.map { it.copy() }.toMutableList(),
+        members = members.map { it.copy() }.toMutableList()
+    )
+
+    @get:Transient
+    val isGroup: Boolean get() = runMode == JobRunMode.GROUP
+
+    @get:Transient
+    val hasReadyCheck: Boolean get() = readyPort > 0 || readyUrl.isNotBlank()
 
     @get:Transient
     val compactLabel: String get() = shortName.ifBlank { name }

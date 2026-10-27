@@ -39,6 +39,7 @@ class JobBarMainToolbarGroup : ActionGroup(), DumbAware {
         if (!JobBarMainToolbarSettings.isEnabled(project)) return EMPTY_ARRAY
         // Cached per job so the toolbar keeps the same components between updates.
         return JobBarService.get(project).jobs()
+            .filter { it.enabled }
             .map { job -> chipActions.getOrPut(job.id) { JobChipAction(job.id) } }
             .toTypedArray()
     }
@@ -53,7 +54,7 @@ private class JobChipAction(private val jobId: String) : AnAction(), CustomCompo
 
     override fun update(e: AnActionEvent) {
         val project = e.project
-        val job = project?.let { JobBarService.get(it).jobs().find { job -> job.id == jobId } }
+        val job = project?.let { JobBarService.get(it).jobs().find { job -> job.id == jobId && job.enabled } }
         e.presentation.isEnabledAndVisible = job != null
         e.presentation.putClientProperty(PROJECT, project)
         e.presentation.putClientProperty(JOB, job)

@@ -18,7 +18,7 @@ object JobShortcuts {
 
     fun sync(project: Project) {
         val manager = ActionManager.getInstance()
-        val jobs = JobBarService.get(project).jobs()
+        val jobs = JobBarService.get(project).jobs().filter { it.enabled }
         jobs.forEach { job ->
             val id = PREFIX + job.id
             val existing = manager.getAction(id)
@@ -52,7 +52,7 @@ private class RunJobShortcutAction(private val jobId: String) : DumbAwareAction(
     override fun getActionUpdateThread() = ActionUpdateThread.EDT
 
     private fun job(e: AnActionEvent): JobDefinition? =
-        e.project?.let { project -> JobBarService.get(project).jobs().find { it.id == jobId } }
+        e.project?.let { project -> JobBarService.get(project).jobs().find { it.id == jobId && it.enabled } }
 
     override fun update(e: AnActionEvent) {
         val project = e.project

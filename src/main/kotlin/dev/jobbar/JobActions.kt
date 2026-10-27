@@ -7,6 +7,9 @@ import com.intellij.openapi.actionSystem.AnActionEvent
 import com.intellij.openapi.actionSystem.DataContext
 import com.intellij.openapi.actionSystem.DefaultActionGroup
 import com.intellij.openapi.actionSystem.Separator
+import com.intellij.openapi.actionSystem.ToggleAction
+import com.intellij.openapi.actionSystem.ActionUpdateThread
+import com.intellij.openapi.project.DumbAware
 import com.intellij.openapi.components.Service
 import com.intellij.openapi.components.service
 import com.intellij.openapi.project.DumbAwareAction
@@ -29,7 +32,8 @@ class JobActions(private val project: Project) {
 
     /** Runs the job right away, or asks for a variant first when it has any. */
     fun runInteractive(job: JobDefinition, dataContext: DataContext) {
-        if (job.variants.isEmpty()) {
+        if (!job.enabled) return
+        if (job.isGroup || job.variants.isEmpty()) {
             runtimes.run(job)
             return
         }
@@ -69,17 +73,17 @@ class JobActions(private val project: Project) {
 
     fun contextActions(job: JobDefinition, variantsAsSubmenu: Boolean = false): DefaultActionGroup = DefaultActionGroup().apply {
         val runtime = runtimes.runtime(job)
-        if (variantsAsSubmenu && job.variants.isNotEmpty()) {
+        if (variantsAsSubmenu && job.variants.isNotEmpty() && !job.isGroup) {
             // A nested popup cannot be opened from inside a popup, so variants become a submenu.
-            if (!runtime.isActive()) add(DefaultActionGroup("Run", variantActions(job)).apply {
+            if (!runtime.isActive() && job.enabled) add(DefaultActionGroup("Run", variantActions(job)).apply {
                 isPopup = true
                 templatePresentation.icon = AllIcons.Actions.Execute
             })
         } else {
-            add(RunJobAction(job, if (job.variants.isEmpty()) "Run" else "Run…"))
+            add(RunJobAction(job, if (job.variants.isEmpty() || job.isGroup) "Run" else "Run…"))
         }
         if (runtime.isActive()) add(StopJobAction(job))
-        if (!runtime.inSequence && runtime.status in activeStatuses) add(RestartJobAction(job))
+        if (!runtime.inSequence && (runtime.status in activeStatuses || job.isGroup && runtime.isActive())) add(RestartJobAction(job))
         add(OpenConsoleAction(job))
         addSeparator()
         val index = service.jobs().indexOfFirst { it.id == job.id }
@@ -93,6 +97,14 @@ class JobActions(private val project: Project) {
         })
         addSeparator()
         add(EditJobAction(job))
+        add(object : ToggleAction("Enabled", "Disabled jobs are hidden from toolbars and shortcuts and cannot run", null), DumbAware {
+            override fun getActionUpdateThread() = ActionUpdateThread.EDT
+            override fun isSelected(e: AnActionEvent): Boolean = job.enabled
+            override fun setSelected(e: AnActionEvent, state: Boolean) {
+                if (!state) runtimes.stop(job)
+                service.save(job.copyDeep().apply { enabled = state })
+            }
+        })
         add(object : DumbAwareAction("Copy Job", "Create a copy of this job", AllIcons.Actions.Copy) {
             override fun actionPerformed(e: AnActionEvent) = service.duplicate(job)
         })
@@ -109,8 +121,13 @@ class JobActions(private val project: Project) {
     private inner class EditJobAction(private val job: JobDefinition) :
         DumbAwareAction("Edit Job…", "Edit job", AllIcons.Actions.Edit) {
         override fun actionPerformed(e: AnActionEvent) {
-            val dialog = JobEditorDialog(project, job)
-            if (dialog.showAndGet()) service.save(dialog.result())
+            if (job.isGroup) {
+                val dialog = GroupEditorDialog(project, job)
+                if (dialog.showAndGet()) service.save(dialog.result())
+            } else {
+                val dialog = JobEditorDialog(project, job)
+                if (dialog.showAndGet()) service.save(dialog.result())
+            }
         }
     }
 
@@ -119,7 +136,7 @@ class JobActions(private val project: Project) {
         text: String
     ) : DumbAwareAction(text, "Run ${job.name}", AllIcons.Actions.Execute) {
         override fun update(e: AnActionEvent) {
-            e.presentation.isEnabled = runtimes.runtime(job).status !in activeStatuses
+            e.presentation.isEnabled = job.enabled && !runtimes.runtime(job).isActive()
         }
 
         override fun actionPerformed(e: AnActionEvent) = runInteractive(job, e.dataContext)

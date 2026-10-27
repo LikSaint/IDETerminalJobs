@@ -32,12 +32,25 @@ fun statusColor(status: JobRuntimeStatus): Color = when (status) {
     JobRuntimeStatus.IDLE, JobRuntimeStatus.STOPPED -> UIUtil.getContextHelpForeground()
 }
 
+/** Dot color for icon mode; no dot while idle or stopped. */
+fun statusDotColor(status: JobRuntimeStatus): Color? = when (status) {
+    JobRuntimeStatus.IDLE, JobRuntimeStatus.STOPPED, JobRuntimeStatus.STARTING, JobRuntimeStatus.RUNNING -> null
+    else -> statusColor(status)
+}
+
 fun statusDescription(runtime: JobRuntime): String? {
+    if (runtime.groupSummary.isNotEmpty() && runtime.status != JobRuntimeStatus.IDLE) {
+        return "${statusDescriptionOf(runtime.status)} · ${runtime.groupSummary}"
+    }
     if (runtime.inSequence) {
         val current = runtime.sequence[runtime.sequenceIndex]
         return "Running all · ${runtime.sequenceIndex + 1}/${runtime.sequence.size} · ${current.label}"
     }
-    return when (runtime.status) {
+    return statusDescriptionOf(runtime.status)
+}
+
+private fun statusDescriptionOf(status: JobRuntimeStatus): String? {
+    return when (status) {
         JobRuntimeStatus.STARTING -> "Starting · waiting for a status match"
         JobRuntimeStatus.RUNNING -> "Running"
         JobRuntimeStatus.READY -> "Running and tracked"
@@ -96,9 +109,17 @@ class JobChip : JBPanel<JobChip>(BorderLayout()) {
     fun bind(project: Project, job: JobDefinition, runtime: JobRuntime) {
         this.project = project
         this.job = job
-        label.text = job.compactLabel
-        label.foreground = statusColor(runtime.status)
-        label.icon = if (runtime.isBusy()) AnimatedIcon.Default.INSTANCE else null
+        val icon = JobIcons.find(job.icon)
+        if (icon != null) {
+            // Icon mode: the status is a dot on the icon (a loader while busy); the text keeps its normal color.
+            label.icon = if (runtime.isBusy()) AnimatedIcon.Default.INSTANCE else StatusBadgeIcon(icon, statusDotColor(runtime.status))
+            label.text = if (job.iconOnly) "" else job.compactLabel
+            label.foreground = if (job.enabled) UIUtil.getLabelForeground() else UIUtil.getContextHelpForeground()
+        } else {
+            label.text = job.compactLabel
+            label.foreground = statusColor(runtime.status)
+            label.icon = if (runtime.isBusy()) AnimatedIcon.Default.INSTANCE else null
+        }
         toolTipText = listOfNotNull(job.name, statusDescription(runtime)).joinToString(" · ")
         revalidate()
         repaint()

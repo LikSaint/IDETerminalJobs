@@ -42,7 +42,13 @@ class JobEditorDialog(
     private val commandField = JBTextField(source?.command ?: "")
     private val directoryField = JBTextField(source?.workingDirectory ?: "\$PROJECT_DIR\$")
     private val typeBox = ComboBox(DefaultComboBoxModel(JobType.entries.toTypedArray()))
-    private val modeBox = ComboBox(DefaultComboBoxModel(JobRunMode.entries.toTypedArray()))
+    // Groups have their own dialog.
+    private val modeBox = ComboBox(DefaultComboBoxModel(JobRunMode.entries.filter { it != JobRunMode.GROUP }.toTypedArray()))
+    private val iconBox = JobIcons.comboBox(source?.icon.orEmpty())
+    private val iconOnly = JBCheckBox("Icon only: hide the text in toolbars", source?.iconOnly ?: false)
+    private val enabled = JBCheckBox("Enabled", source?.enabled ?: true)
+    private val readyPortField = JBTextField(source?.readyPort?.takeIf { it > 0 }?.toString().orEmpty(), 6).apply { emptyText.text = "e.g. 4200" }
+    private val readyUrlField = JBTextField(source?.readyUrl.orEmpty()).apply { emptyText.text = "e.g. http://localhost:4200" }
     private val reuseConsole = JBCheckBox("Reuse the same console for subsequent runs", source?.reuseConsole ?: true)
     private val parameterField = JBTextField(source?.parameterName ?: "")
     private val runAllVariants = JBCheckBox("Add an “All” option that runs every variant in order", source?.runAllVariants ?: false)
@@ -89,12 +95,17 @@ class JobEditorDialog(
         val general = FormBuilder.createFormBuilder()
             .addLabeledComponent("Name:", nameField)
             .addLabeledComponent("Short name:", shortNameField)
+            .addLabeledComponent("Icon:", iconBox)
+            .addComponentToRightColumn(iconOnly)
+            .addComponentToRightColumn(JBLabel("With an icon, toolbars show the status as a dot on it."))
             .addLabeledComponent("Job type:", typeBox)
             .addLabeledComponent("Run mode:", modeBox)
             .addLabeledComponent("Command:", commandField)
             .addLabeledComponent("Working directory:", directoryField)
-            .addComponent(reuseConsole)
             .addComponentToRightColumn(JBLabel("Use \$PROJECT_DIR\$ for the current project root."))
+            .addComponent(reuseConsole)
+            .addComponent(enabled)
+            .addComponentToRightColumn(JBLabel("Disabled jobs stay in the list but are hidden from toolbars and shortcuts."))
             .panel
 
         val parametersTable = ToolbarDecorator.createDecorator(variantsTable)
@@ -134,6 +145,10 @@ class JobEditorDialog(
             .addLabeledComponent("Recovery patterns:", JBScrollPane(recoveryArea))
             .addComponent(JBLabel("One pattern per line. Prefix a regular expression with regex:. Matching ignores ANSI terminal colors."))
             .addComponent(resetButton)
+            .addSeparator()
+            .addLabeledComponent("Ready when port is open:", readyPortField)
+            .addLabeledComponent("Ready when URL responds:", readyUrlField)
+            .addComponent(JBLabel("Tracked processes: checked every second until the first success, alongside the recovery patterns."))
             .panel
 
         val tabs = JTabbedPane().apply {
@@ -216,6 +231,10 @@ class JobEditorDialog(
         if (commandField.text.isBlank()) return ValidationInfo("Enter a command", commandField)
         val parameter = parameterField.text.trim()
         if (variantsModel.rowCount > 0 && parameter.isBlank()) return ValidationInfo("Enter a parameter name", parameterField)
+        val port = readyPortField.text.trim()
+        if (port.isNotEmpty() && port.toIntOrNull()?.takeIf { it in 1..65535 } == null) return ValidationInfo("Enter a port between 1 and 65535", readyPortField)
+        val url = readyUrlField.text.trim()
+        if (url.isNotEmpty() && runCatching { java.net.URI(url).toURL() }.isFailure) return ValidationInfo("Enter a full URL, e.g. http://localhost:4200", readyUrlField)
         return null
     }
 
@@ -239,6 +258,11 @@ class JobEditorDialog(
         autoSortVariants = autoSort,
         busyPatterns = busyArea.text.trim(),
         errorPatterns = errorsArea.text.trim(),
-        recoveryPatterns = recoveryArea.text.trim()
+        recoveryPatterns = recoveryArea.text.trim(),
+        icon = iconBox.selectedItem as? String ?: "",
+        iconOnly = iconOnly.isSelected,
+        enabled = enabled.isSelected,
+        readyPort = readyPortField.text.trim().toIntOrNull() ?: 0,
+        readyUrl = readyUrlField.text.trim()
     )
 }

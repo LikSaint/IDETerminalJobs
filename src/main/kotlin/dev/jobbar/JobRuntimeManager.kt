@@ -26,7 +26,14 @@ import com.intellij.openapi.project.Project
 import com.intellij.openapi.util.Disposer
 import com.intellij.openapi.util.Key
 import com.intellij.openapi.util.SystemInfo
+import com.intellij.util.concurrency.AppExecutorUtil
 import java.io.File
+import java.net.HttpURLConnection
+import java.net.InetSocketAddress
+import java.net.Socket
+import java.net.URI
+import java.util.concurrent.ScheduledFuture
+import java.util.concurrent.TimeUnit
 import java.time.LocalTime
 import java.time.format.DateTimeFormatter
 import javax.swing.Icon
@@ -50,7 +57,16 @@ data class JobRuntime(
     var cycleHasError: Boolean = false,
     // "Run all": the variants to go through and the index of the one currently running (-1 = none).
     var sequence: List<JobVariant> = emptyList(),
-    var sequenceIndex: Int = -1
+    var sequenceIndex: Int = -1,
+    // Port / URL readiness polling of the current process.
+    var readyCheck: ScheduledFuture<*>? = null,
+    // Sounds: the status last reacted to, and whether this run has already been ready once.
+    var notifiedStatus: JobRuntimeStatus = JobRuntimeStatus.IDLE,
+    var readyNotified: Boolean = false,
+    // Groups: the members being launched one after another (null = no launch in progress).
+    var groupLaunch: GroupLaunch? = null,
+    var groupRestartPending: Boolean = false,
+    var groupSummary: String = ""
 ) {
     val inSequence: Boolean get() = sequenceIndex in sequence.indices
 
@@ -58,6 +74,11 @@ data class JobRuntime(
         sequence = emptyList()
         sequenceIndex = -1
     }
+}
+
+/** A group launch in progress: [index] is the member being started or waited for. */
+class GroupLaunch(val members: List<GroupMember>, val sequential: Boolean) {
+    var index = 0
 }
 
 @Service(Service.Level.PROJECT)
@@ -69,12 +90,14 @@ class JobRuntimeManager(private val project: Project) : Disposable {
     fun runtime(job: JobDefinition): JobRuntime = runtimes.getOrPut(job.id) { JobRuntime() }
     fun addListener(listener: () -> Unit) { listeners += listener }
 
-    fun run(job: JobDefinition, variant: JobVariant? = null) = start(job, variant, continueSequence = false)
+    fun run(job: JobDefinition, variant: JobVariant? = null) {
+        if (job.isGroup) runGroup(job) else start(job, variant, continueSequence = false)
+    }
 
     /** Runs every variant in order; the next one starts only after the previous one succeeds. */
     fun runAll(job: JobDefinition) {
         val runtime = runtime(job)
-        if (job.variants.isEmpty() || isProcessAlive(runtime)) return
+        if (!job.enabled || job.variants.isEmpty() || isProcessAlive(runtime)) return
         runtime.sequence = job.variants.map { it.copy() }
         runtime.sequenceIndex = 0
         start(job, runtime.sequence.first(), continueSequence = true)
@@ -85,8 +108,9 @@ class JobRuntimeManager(private val project: Project) : Disposable {
 
     private fun start(job: JobDefinition, variant: JobVariant?, continueSequence: Boolean) {
         val runtime = runtime(job)
-        if (isProcessAlive(runtime)) return
+        if (!job.enabled || job.isGroup || isProcessAlive(runtime)) return
         if (!continueSequence) runtime.clearSequence()
+        runtime.readyNotified = false
 
         val command = resolveCommand(job, variant)
         val console = prepareConsole(job, runtime)
@@ -112,9 +136,10 @@ class JobRuntimeManager(private val project: Project) : Disposable {
                 override fun startNotified(event: ProcessEvent) {
                     runtime.status = when {
                         job.runMode == JobRunMode.ONE_SHOT -> JobRuntimeStatus.RUNNING
-                        job.recoveryPatterns.isBlank() -> JobRuntimeStatus.READY
+                        job.recoveryPatterns.isBlank() && !job.hasReadyCheck -> JobRuntimeStatus.READY
                         else -> JobRuntimeStatus.STARTING
                     }
+                    if (job.runMode == JobRunMode.TRACKED && job.hasReadyCheck) startReadyCheck(job, runtime, handler)
                     fireChanged()
                 }
 
@@ -124,6 +149,7 @@ class JobRuntimeManager(private val project: Project) : Disposable {
                 }
 
                 override fun processTerminated(event: ProcessEvent) {
+                    runtime.readyCheck?.cancel(false)
                     runtime.status = when {
                         runtime.stoppedByUser -> JobRuntimeStatus.STOPPED
                         event.exitCode != 0 -> JobRuntimeStatus.ERROR
@@ -180,6 +206,7 @@ class JobRuntimeManager(private val project: Project) : Disposable {
     }
 
     fun stop(job: JobDefinition) {
+        if (job.isGroup) return stopGroup(job)
         val runtime = runtime(job)
         if (runtime.inSequence && !isProcessAlive(runtime)) {
             // Stopped between two variants: there is no process to kill.
@@ -193,6 +220,7 @@ class JobRuntimeManager(private val project: Project) : Disposable {
     }
 
     fun restart(job: JobDefinition) {
+        if (job.isGroup) return restartGroup(job)
         val runtime = runtime(job)
         // Repeat the variant that was last run, so its parameter is substituted again.
         val variant = runtime.lastVariant
@@ -209,6 +237,17 @@ class JobRuntimeManager(private val project: Project) : Disposable {
     }
 
     fun openConsole(job: JobDefinition) {
+        if (job.isGroup) {
+            // A group has no output of its own: add the members' tabs and show the first one.
+            val members = groupJobs(job)
+            members.drop(1).forEach { member ->
+                val memberRuntime = runtime(member)
+                if (memberRuntime.descriptor?.let(::isShown) != true) prepareConsole(member, memberRuntime)
+                showRunTab(memberRuntime, bringToFront = false)
+            }
+            members.firstOrNull()?.let(::openConsole)
+            return
+        }
         val runtime = runtime(job)
         if (runtime.descriptor?.let(::isShown) != true) prepareConsole(job, runtime)
         showRunTab(runtime, bringToFront = true)
@@ -277,6 +316,194 @@ class JobRuntimeManager(private val project: Project) : Disposable {
         override fun getActionUpdateThread() = ActionUpdateThread.EDT
         override fun update(e: AnActionEvent) { e.presentation.isEnabled = runtimes[jobId]?.isActive() == true }
         override fun actionPerformed(e: AnActionEvent) { jobById(jobId)?.let(::stop) }
+    }
+
+    // ---- Readiness by port / URL --------------------------------------------------------------------------
+
+    private fun startReadyCheck(job: JobDefinition, runtime: JobRuntime, handler: KillableColoredProcessHandler) {
+        runtime.readyCheck?.cancel(false)
+        runtime.readyCheck = AppExecutorUtil.getAppScheduledExecutorService().scheduleWithFixedDelay({
+            if (runtime.handler !== handler || handler.isProcessTerminated) {
+                runtime.readyCheck?.cancel(false)
+            } else if (isReady(job)) {
+                runtime.readyCheck?.cancel(false)
+                // Only promote a run that is still starting; error patterns keep their warning.
+                if (runtime.status == JobRuntimeStatus.STARTING) {
+                    runtime.status = JobRuntimeStatus.READY
+                    fireChanged()
+                }
+            }
+        }, 1, 1, TimeUnit.SECONDS)
+    }
+
+    private fun isReady(job: JobDefinition): Boolean {
+        if (job.readyPort > 0) {
+            val open = runCatching {
+                Socket().use { it.connect(InetSocketAddress("localhost", job.readyPort), 300) }
+            }.isSuccess
+            if (open) return true
+        }
+        if (job.readyUrl.isNotBlank()) {
+            // Any HTTP response means the server is up, whatever its status code.
+            val responded = runCatching {
+                (URI(job.readyUrl.trim()).toURL().openConnection() as HttpURLConnection).run {
+                    connectTimeout = 1_000
+                    readTimeout = 1_000
+                    requestMethod = "GET"
+                    try { responseCode } finally { disconnect() }
+                }
+            }.isSuccess
+            if (responded) return true
+        }
+        return false
+    }
+
+    // ---- Groups ---------------------------------------------------------------------------------------------
+
+    private fun groupJobs(group: JobDefinition): List<JobDefinition> =
+        group.members.mapNotNull { jobById(it.jobId) }.filter { !it.isGroup }
+
+    private fun runGroup(group: JobDefinition) {
+        if (!group.enabled) return
+        val runtime = runtime(group)
+        if (runtime.groupLaunch != null) return
+        val members = group.members.filter { member -> jobById(member.jobId)?.let { !it.isGroup && it.enabled } == true }
+        if (members.isEmpty()) return
+        val launch = GroupLaunch(members, group.groupSequential)
+        runtime.groupLaunch = launch
+        runtime.groupRestartPending = false
+        runtime.readyNotified = false
+        if (launch.sequential) startMember(members.first())
+        else members.forEach(::startMember)
+        fireChanged()
+    }
+
+    private fun startMember(member: GroupMember) {
+        val job = jobById(member.jobId) ?: return
+        // A member that is already running is not restarted; a sequential launch just waits for it to be ready.
+        if (runtime(job).isActive()) return
+        when (member.variant) {
+            "" -> start(job, null, continueSequence = false)
+            GroupMember.ALL_VARIANTS -> runAll(job)
+            else -> start(job, job.variants.find { it.value == member.variant } ?: JobVariant(member.variant, member.variant), continueSequence = false)
+        }
+    }
+
+    private fun stopGroup(group: JobDefinition) {
+        val runtime = runtime(group)
+        runtime.groupLaunch = null
+        runtime.groupRestartPending = false
+        groupJobs(group).filter { runtime(it).isActive() }.forEach(::stop)
+        fireChanged()
+    }
+
+    private fun restartGroup(group: JobDefinition) {
+        stopGroup(group)
+        // The launch starts from refreshGroups() once every member process has ended.
+        runtime(group).groupRestartPending = true
+        fireChanged()
+    }
+
+    private fun memberDone(job: JobDefinition): Boolean {
+        val runtime = runtime(job)
+        return !runtime.isBusy() && when (job.runMode) {
+            JobRunMode.ONE_SHOT -> runtime.status == JobRuntimeStatus.SUCCESS
+            else -> runtime.status == JobRuntimeStatus.READY
+        }
+    }
+
+    private fun memberFailed(job: JobDefinition): Boolean {
+        val runtime = runtime(job)
+        return !runtime.isBusy() && runtime.status in setOf(JobRuntimeStatus.ERROR, JobRuntimeStatus.STOPPED, JobRuntimeStatus.IDLE)
+    }
+
+    /** Drives group launches and recomputes group statuses from their members. Runs on the EDT. */
+    private fun refreshGroups() {
+        JobBarService.get(project).jobs().filter { it.isGroup }.forEach { group ->
+            val runtime = runtime(group)
+            val members = groupJobs(group)
+            if (runtime.groupRestartPending && members.none { isProcessAlive(runtime(it)) }) {
+                runtime.groupRestartPending = false
+                runGroup(group)
+            }
+            runtime.groupLaunch?.let { launch -> advanceGroup(group, runtime, launch) }
+
+            val statuses = members.map { runtime(it) }
+            val ready = members.count(::memberDone)
+            runtime.groupSummary = if (members.isEmpty()) "" else "$ready/${members.size} ready"
+            runtime.status = when {
+                runtime.groupLaunch != null || runtime.groupRestartPending || statuses.any { it.isBusy() } -> JobRuntimeStatus.RUNNING
+                statuses.any { it.status == JobRuntimeStatus.ERROR } -> JobRuntimeStatus.ERROR
+                statuses.any { it.status == JobRuntimeStatus.WARNING } -> JobRuntimeStatus.WARNING
+                members.isNotEmpty() && ready == members.size ->
+                    if (statuses.any { it.status == JobRuntimeStatus.READY }) JobRuntimeStatus.READY else JobRuntimeStatus.SUCCESS
+                // Some members up, some not.
+                statuses.any { it.status == JobRuntimeStatus.READY } -> JobRuntimeStatus.WARNING
+                else -> JobRuntimeStatus.IDLE
+            }
+        }
+    }
+
+    private fun advanceGroup(group: JobDefinition, runtime: JobRuntime, launch: GroupLaunch) {
+        val pending = launch.members.drop(launch.index).mapNotNull { member -> jobById(member.jobId)?.let { member to it } }
+        if (!launch.sequential) {
+            val jobs = launch.members.mapNotNull { jobById(it.jobId) }
+            when {
+                jobs.any(::memberFailed) -> finishGroup(runtime, success = false)
+                jobs.all(::memberDone) -> finishGroup(runtime, success = true)
+            }
+            return
+        }
+        if (pending.isEmpty()) return finishGroup(runtime, success = true)
+        // Move past every member that is already done (e.g. it was running before), starting the next ones.
+        while (true) {
+            val current = launch.members.getOrNull(launch.index)?.let { jobById(it.jobId) }
+                ?: return finishGroup(runtime, success = true)
+            when {
+                memberFailed(current) -> return finishGroup(runtime, success = false)
+                !memberDone(current) -> return
+            }
+            launch.index++
+            launch.members.getOrNull(launch.index)?.let(::startMember)
+        }
+    }
+
+    private fun finishGroup(runtime: JobRuntime, success: Boolean) {
+        runtime.groupLaunch = null
+        JobSounds.play(if (success) JobSounds.Kind.SUCCESS else JobSounds.Kind.ERROR)
+    }
+
+    // ---- Sounds -------------------------------------------------------------------------------------------
+
+    private fun launchingGroupMembers(): Set<String> = JobBarService.get(project).jobs()
+        .filter { it.isGroup && runtimes[it.id]?.groupLaunch != null }
+        .flatMapTo(HashSet()) { group -> group.members.map { it.jobId } }
+
+    /**
+     * Plays a short sound for meaningful status changes of plain jobs. Runs on the EDT.
+     * Members of a launching group stay quiet: the group plays one sound when its launch ends.
+     */
+    private fun playStatusSounds(launching: Set<String>) {
+        JobBarService.get(project).jobs().filter { !it.isGroup }.forEach { job ->
+            val runtime = runtimes[job.id] ?: return@forEach
+            val previous = runtime.notifiedStatus
+            val current = runtime.status
+            if (previous == current) return@forEach
+            runtime.notifiedStatus = current
+            val quiet = job.id in launching
+            when (current) {
+                JobRuntimeStatus.SUCCESS -> if (!quiet && !runtime.inSequence) JobSounds.play(JobSounds.Kind.SUCCESS)
+                // Tracked: the first ready after start, or a recovery from errors; plain rebuilds stay silent.
+                JobRuntimeStatus.READY -> if (!runtime.readyNotified || previous == JobRuntimeStatus.WARNING) {
+                    runtime.readyNotified = true
+                    if (!quiet) JobSounds.play(JobSounds.Kind.SUCCESS)
+                }
+                JobRuntimeStatus.ERROR, JobRuntimeStatus.WARNING -> if (!quiet) JobSounds.play(JobSounds.Kind.ERROR)
+                // A tracked process that ended by itself.
+                JobRuntimeStatus.STOPPED -> if (!runtime.stoppedByUser && previous in activeStatuses) JobSounds.play(JobSounds.Kind.FINISHED)
+                else -> Unit
+            }
+        }
     }
 
     private fun resolveCommand(job: JobDefinition, variant: JobVariant?): String {
@@ -359,6 +586,11 @@ class JobRuntimeManager(private val project: Project) : Disposable {
     }
 
     private fun fireChanged() = SwingUtilities.invokeLater {
+        if (project.isDisposed) return@invokeLater
+        // Taken before groups advance, so the member that completes a launch stays quiet too.
+        val launchingMembers = launchingGroupMembers()
+        refreshGroups()
+        playStatusSounds(launchingMembers)
         listeners.toList().forEach { it() }
         // Main toolbar labels are action components; ask the platform to update them now.
         ActivityTracker.getInstance().inc()
@@ -366,6 +598,7 @@ class JobRuntimeManager(private val project: Project) : Disposable {
 
     override fun dispose() {
         runtimes.values.forEach {
+            it.readyCheck?.cancel(false)
             it.stoppedByUser = true
             it.handler?.destroyProcess()
         }
