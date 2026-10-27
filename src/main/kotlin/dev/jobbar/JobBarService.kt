@@ -19,7 +19,9 @@ class JobBarService(private val project: Project) : PersistentStateComponent<Job
     private val listeners = mutableListOf<() -> Unit>()
 
     override fun getState(): State = state
-    override fun loadState(state: State) { this.state = state }
+    override fun loadState(state: State) {
+        this.state = State(repaired(state.jobs).toMutableList())
+    }
 
     fun jobs(): List<JobDefinition> = state.jobs
 
@@ -76,8 +78,16 @@ class JobBarService(private val project: Project) : PersistentStateComponent<Job
 
     fun importXml(xml: String) {
         val imported = XmlSerializer.deserialize(JDOMUtil.load(xml), State::class.java)
-        state = State(imported.jobs.map { it.copyDeep() }.toMutableList())
+        state = State(repaired(imported.jobs.map { it.copyDeep() }).toMutableList())
         changed()
+    }
+
+    /**
+     * A job with members and no command can only be a launcher. 0.10.0 renamed the stored run mode label
+     * ("Group"), so such launchers were loaded as empty one-shot jobs; this turns them back into launchers.
+     */
+    private fun repaired(jobs: List<JobDefinition>): List<JobDefinition> = jobs.onEach { job ->
+        if (job.members.isNotEmpty() && job.command.isBlank() && job.runMode != JobRunMode.GROUP) job.runMode = JobRunMode.GROUP
     }
 
     private fun changed() {

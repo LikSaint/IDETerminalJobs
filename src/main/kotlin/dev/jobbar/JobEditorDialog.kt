@@ -14,6 +14,7 @@ import com.intellij.openapi.ui.ComboBox
 import com.intellij.openapi.ui.DialogWrapper
 import com.intellij.openapi.ui.Messages
 import com.intellij.openapi.ui.ValidationInfo
+import com.intellij.ui.SimpleListCellRenderer
 import com.intellij.ui.ToolbarDecorator
 import com.intellij.ui.components.JBCheckBox
 import com.intellij.ui.components.JBLabel
@@ -41,9 +42,13 @@ class JobEditorDialog(
     private val shortNameField = JBTextField(source?.shortName ?: "").apply { emptyText.text = "Defaults to the name" }
     private val commandField = JBTextField(source?.command ?: "")
     private val directoryField = JBTextField(source?.workingDirectory ?: "\$PROJECT_DIR\$")
-    private val typeBox = ComboBox(DefaultComboBoxModel(JobType.entries.toTypedArray()))
+    private val typeBox = ComboBox(DefaultComboBoxModel(JobType.entries.toTypedArray())).apply {
+        renderer = SimpleListCellRenderer.create("") { it.label }
+    }
     // Groups have their own dialog.
-    private val modeBox = ComboBox(DefaultComboBoxModel(JobRunMode.entries.filter { it != JobRunMode.GROUP }.toTypedArray()))
+    private val modeBox = ComboBox(DefaultComboBoxModel(JobRunMode.entries.filter { it != JobRunMode.GROUP }.toTypedArray())).apply {
+        renderer = SimpleListCellRenderer.create("") { it.label }
+    }
     private val iconBox = JobIcons.comboBox(source?.icon.orEmpty(), project)
     private val iconOnly = JBCheckBox("Icon only: hide the text in toolbars", source?.iconOnly ?: false)
     private val enabled = JBCheckBox("Enabled", source?.enabled ?: true)

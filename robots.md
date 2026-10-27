@@ -106,7 +106,7 @@ JAVA_HOME=/Applications/WebStorm.app/Contents/jbr/Contents/Home \
 - Gradle wrapper в репозитории нет. Используется Gradle из `~/.gradle/wrapper/dists`.
 - Результат: `build/distributions/JobBar-<version>.zip`. Пользователь ставит его через Install Plugin from Disk и перезапускает IDE.
 - При каждом релизе поднимай версию в `build.gradle.kts`, а в `plugin.xml` ставь такую же, чтобы не путаться.
-- Автотестов пока нет (testFramework подключён, но тестов нет). Проверка — ручная в IDE, поэтому чётко пиши пользователю, что проверено, а что нет.
+- Автотесты: только `JobSerializationTest` (сериализация, запуск `gradle test`). Остальное проверяется вручную в IDE, поэтому чётко пиши пользователю, что проверено, а что нет.
 - Логи IDE: `~/Library/Logs/JetBrains/WebStorm2025.3/idea.log`. Дампы зависших write actions: `.../bg-wa/`. Системные свойства работающей IDE: `jcmd <pid> VM.system_properties` (jcmd лежит в `…/WebStorm.app/Contents/jbr/Contents/Home/bin`).
 - Исходников платформы локально нет. При необходимости классы берутся из `/Applications/WebStorm.app/Contents/lib/*.jar`; javap в JBR отсутствует.
 
@@ -120,6 +120,7 @@ JAVA_HOME=/Applications/WebStorm.app/Contents/jbr/Contents/Home \
 3. **Restart** должен передавать `lastVariant`, иначе плейсхолдер `${…}` останется в команде неподставленным.
 4. `actionPerformed` выполняется на EDT под write-intent lock. Долгие модальные вещи на EDT задерживают фоновые write actions IDE (в `idea.log` появляется «Cannot execute background write action in 10 seconds»). Это не фатально, но тяжёлую работу на EDT не добавляй.
 5. **Мышь в ярлыках тулбара.** Главный тулбар навешивает на наши компоненты свои обработчики: подсказки и меню «Customize Toolbar…» (`MainToolbar.installClickListener`), причём consumed-события он не проверяет. Поэтому `JobChip` слушает мышь и на себе, и на внутреннем тексте, а жесты меню (правый клик, popup trigger, Ctrl+клик) перехватывает в `processMouseEvent` и дальше не передаёт. Не переноси обработку правого клика обратно в обычный `MouseListener`.
+6. **Enum в XML.** `XmlSerializer` пишет и читает enum через `toString()`. Раньше `toString()` возвращал подпись для UI, и переименование подписи «Group» → «Launcher» в 0.10.0 сломало загрузку (NPE в `setRunMode`, запускатор превратился в пустую one-shot). Теперь `runMode`/`type`/`variantSortOrder` идут через конвертеры (`JobRunModeConverter` и др.): пишут `name`, читают и имя, и старые подписи, на неизвестном значении берут дефолт. У enum нет `toString()`-переопределений — подписи только в рендерерах. `JobBarService.repaired()` возвращает запускаторам режим GROUP (есть members, нет команды). Тесты — `src/test/kotlin/dev/jobbar/JobSerializationTest.kt`, запуск `gradle test`.
 
 ## Соглашения
 

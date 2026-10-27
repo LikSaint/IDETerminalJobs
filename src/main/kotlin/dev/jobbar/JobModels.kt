@@ -1,6 +1,8 @@
 package dev.jobbar
 
 import com.intellij.openapi.util.text.NaturalComparator
+import com.intellij.util.xmlb.Converter
+import com.intellij.util.xmlb.annotations.OptionTag
 import com.intellij.util.xmlb.annotations.Transient
 import java.util.UUID
 
@@ -9,8 +11,6 @@ enum class JobRunMode(val label: String) {
     TRACKED("Tracked process"),
     // A launcher ("group" in code) starts other jobs (all at once or one after another); no command of its own.
     GROUP("Launcher");
-
-    override fun toString(): String = label
 }
 
 enum class JobType(val label: String) {
@@ -23,8 +23,6 @@ enum class JobType(val label: String) {
     DOCKER_COMPOSE("Docker Compose"),
     SPRING_BOOT("Spring Boot"),
     CUSTOM("Custom");
-
-    override fun toString(): String = label
 }
 
 enum class VariantSortOrder(val label: String) {
@@ -42,8 +40,6 @@ enum class VariantSortOrder(val label: String) {
             VALUE_DESC -> compareByDescending(natural) { it.value }
         }
     }
-
-    override fun toString(): String = label
 }
 
 data class JobVariant(
@@ -71,13 +67,16 @@ data class JobDefinition(
     var iconOnly: Boolean = false,
     var command: String = "",
     var workingDirectory: String = "\$PROJECT_DIR\$",
+    @get:OptionTag(converter = JobRunModeConverter::class)
     var runMode: JobRunMode = JobRunMode.ONE_SHOT,
+    @get:OptionTag(converter = JobTypeConverter::class)
     var type: JobType = JobType.GENERIC,
     var reuseConsole: Boolean = true,
     var parameterName: String = "",
     var variants: MutableList<JobVariant> = mutableListOf(),
     var runAllVariants: Boolean = false,
     // Variants keep their custom order unless auto-sort is on; the order is the last one picked.
+    @get:OptionTag(converter = VariantSortOrderConverter::class)
     var variantSortOrder: VariantSortOrder = VariantSortOrder.LABEL_ASC,
     var autoSortVariants: Boolean = false,
     var busyPatterns: String = "",
@@ -142,4 +141,26 @@ object JobPresets {
         )
         else -> StatusPreset("", "")
     }
+}
+
+/*
+ * Enums are stored by name. Older versions stored their UI labels (via toString), so reading accepts both;
+ * an unknown value falls back to the default instead of failing the whole load. Labels are for the UI only:
+ * never derive stored values from them.
+ */
+class JobRunModeConverter : Converter<JobRunMode>() {
+    override fun fromString(value: String): JobRunMode =
+        JobRunMode.entries.find { it.name == value || it.label == value } ?: if (value == "Group") JobRunMode.GROUP else JobRunMode.ONE_SHOT
+    override fun toString(value: JobRunMode): String = value.name
+}
+
+class JobTypeConverter : Converter<JobType>() {
+    override fun fromString(value: String): JobType = JobType.entries.find { it.name == value || it.label == value } ?: JobType.GENERIC
+    override fun toString(value: JobType): String = value.name
+}
+
+class VariantSortOrderConverter : Converter<VariantSortOrder>() {
+    override fun fromString(value: String): VariantSortOrder =
+        VariantSortOrder.entries.find { it.name == value || it.label == value } ?: VariantSortOrder.LABEL_ASC
+    override fun toString(value: VariantSortOrder): String = value.name
 }
