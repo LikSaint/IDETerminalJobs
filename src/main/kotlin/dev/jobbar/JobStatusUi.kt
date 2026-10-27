@@ -86,7 +86,11 @@ class StatusDotIcon(private val color: Color) : Icon {
 
 /** Short, status-colored job label used by the compact view and the main toolbar. Click opens the job menu. */
 class JobChip : JBPanel<JobChip>(BorderLayout()) {
-    private val label = JBLabel().apply { iconTextGap = JBUI.scale(4) }
+    private val label = object : JBLabel() {
+        override fun processMouseEvent(event: MouseEvent) {
+            if (!interceptMenuGesture(event)) super.processMouseEvent(event)
+        }
+    }.apply { iconTextGap = JBUI.scale(4) }
     private val spinner = Timer(50) { label.repaint() }
     private var hovered = false
     private var project: Project? = null
@@ -105,16 +109,9 @@ class JobChip : JBPanel<JobChip>(BorderLayout()) {
                 val point = SwingUtilities.convertPoint(event.component, event.point, this@JobChip)
                 if (!contains(point)) setHovered(false)
             }
-            // Right click (or the platform popup trigger, e.g. Ctrl+click on macOS) opens the job menu;
-            // a plain left click runs the job.
+            // A plain left click runs the job; menu gestures are handled in interceptMenuGesture().
             override fun mousePressed(event: MouseEvent) {
-                when {
-                    event.isPopupTrigger -> showMenu()
-                    SwingUtilities.isLeftMouseButton(event) && !event.isControlDown -> runOrShowMenu()
-                }
-            }
-            override fun mouseReleased(event: MouseEvent) {
-                if (event.isPopupTrigger) showMenu()
+                if (SwingUtilities.isLeftMouseButton(event) && !event.isControlDown && !event.isPopupTrigger) runOrShowMenu()
             }
         }
         addMouseListener(listener)
@@ -147,6 +144,24 @@ class JobChip : JBPanel<JobChip>(BorderLayout()) {
     override fun removeNotify() {
         spinner.stop()
         super.removeNotify()
+    }
+
+    override fun processMouseEvent(event: MouseEvent) {
+        if (!interceptMenuGesture(event)) super.processMouseEvent(event)
+    }
+
+    /**
+     * Right click (or the popup trigger, e.g. Ctrl+click on macOS) opens the job menu. Such events are not passed
+     * on to any listener: the main toolbar adds its own popup handler ("Customize Toolbar…") to our components,
+     * and it ignores consumed events, so it would open a second menu on top of ours.
+     */
+    private fun interceptMenuGesture(event: MouseEvent): Boolean {
+        val gesture = event.isPopupTrigger || SwingUtilities.isRightMouseButton(event) ||
+            (SwingUtilities.isLeftMouseButton(event) && event.isControlDown)
+        if (!gesture) return false
+        if (event.id == MouseEvent.MOUSE_PRESSED) showMenu()
+        event.consume()
+        return true
     }
 
     /** Starts an idle job (asking for a variant first when it has any); a running one opens its menu instead. */

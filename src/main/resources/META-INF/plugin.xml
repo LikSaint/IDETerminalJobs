@@ -1,7 +1,7 @@
 <idea-plugin>
     <id>dev.jobbar</id>
     <name>Job Bar</name>
-    <version>0.9.7</version>
+    <version>0.9.8</version>
     <vendor>LikSaint</vendor>
     <description><![CDATA[
         Create reusable command jobs, run one-shot commands, monitor long-running processes,
