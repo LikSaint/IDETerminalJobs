@@ -17,6 +17,8 @@ import java.awt.Component
 import java.awt.Graphics
 import java.awt.Graphics2D
 import java.awt.RenderingHints
+import java.awt.geom.Ellipse2D
+import com.intellij.ui.scale.JBUIScale
 import javax.swing.Icon
 
 /**
@@ -147,7 +149,7 @@ object JobIcons {
     fun selectedKey(comboBox: ComboBox<String>): String = (comboBox.selectedItem as? String)?.takeIf { it != CHOOSE_CUSTOM }.orEmpty()
 }
 
-/** [base] with a bright status dot in its bottom-left corner (no dot when [dotColor] is null). */
+/** [base] with a small bright status dot in its bottom-left corner (no dot when [dotColor] is null). */
 class StatusBadgeIcon(private val base: Icon, private val dotColor: Color?) : Icon {
     override fun getIconWidth(): Int = base.iconWidth
     override fun getIconHeight(): Int = base.iconHeight
@@ -157,15 +159,21 @@ class StatusBadgeIcon(private val base: Icon, private val dotColor: Color?) : Ic
         val color = dotColor ?: return
         val g = graphics.create() as Graphics2D
         g.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON)
-        val size = JBUI.scale(7)
-        val ring = JBUI.scale(1)
-        val dotX = x - ring
-        val dotY = y + iconHeight - size + ring
-        // A ring in the background color keeps the dot readable over the icon.
-        g.color = component?.background ?: JBColor.background()
-        g.fillOval(dotX - ring, dotY - ring, size + ring * 2, size + ring * 2)
+        g.setRenderingHint(RenderingHints.KEY_STROKE_CONTROL, RenderingHints.VALUE_STROKE_PURE)
+        val dot = JBUIScale.scale(5f)
+        val ring = JBUIScale.scale(1.5f)
+        val outer = dot + ring * 2
+        // Kept inside the icon bounds so toolbars never clip it.
+        val left = x.toFloat()
+        val top = y + iconHeight - outer
+        // The ring takes the color of what is behind the icon, cutting the dot out of the glyph.
+        g.color = backgroundBehind(component)
+        g.fill(Ellipse2D.Float(left, top, outer, outer))
         g.color = color
-        g.fillOval(dotX, dotY, size, size)
+        g.fill(Ellipse2D.Float(left + ring, top + ring, dot, dot))
         g.dispose()
     }
+
+    private fun backgroundBehind(component: Component?): Color =
+        generateSequence(component) { it.parent }.firstOrNull { it.isOpaque }?.background ?: JBColor.background()
 }

@@ -2,6 +2,7 @@ package dev.jobbar
 
 import com.intellij.openapi.project.Project
 import com.intellij.ui.AnimatedIcon
+import com.intellij.ui.JBColor
 import com.intellij.ui.components.JBLabel
 import com.intellij.ui.components.JBPanel
 import com.intellij.util.ui.JBUI
@@ -34,9 +35,16 @@ fun statusColor(status: JobRuntimeStatus): Color = when (status) {
 
 /** Dot color for icon mode; no dot while idle or stopped. */
 fun statusDotColor(status: JobRuntimeStatus): Color? = when (status) {
+    JobRuntimeStatus.READY, JobRuntimeStatus.SUCCESS -> DOT_GREEN
+    JobRuntimeStatus.WARNING -> DOT_ORANGE
+    JobRuntimeStatus.ERROR -> DOT_RED
     JobRuntimeStatus.IDLE, JobRuntimeStatus.STOPPED, JobRuntimeStatus.STARTING, JobRuntimeStatus.RUNNING -> null
-    else -> statusColor(status)
 }
+
+// Brighter than the theme's progress colors so a 5 px dot stays visible (light theme / dark theme).
+private val DOT_GREEN = JBColor(Color(0x2FB344), Color(0x4CE15A))
+private val DOT_ORANGE = JBColor(Color(0xF08C00), Color(0xFFB224))
+private val DOT_RED = JBColor(Color(0xE5383B), Color(0xFF5C5C))
 
 fun statusDescription(runtime: JobRuntime): String? {
     if (runtime.groupSummary.isNotEmpty() && runtime.status != JobRuntimeStatus.IDLE) {
