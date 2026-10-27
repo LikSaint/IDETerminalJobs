@@ -6,7 +6,19 @@ import com.intellij.execution.process.KillableColoredProcessHandler
 import com.intellij.execution.process.ProcessEvent
 import com.intellij.execution.process.ProcessListener
 import com.intellij.execution.ui.ConsoleView
+import com.intellij.execution.executors.DefaultRunExecutor
+import com.intellij.execution.ui.RunContentDescriptor
+import com.intellij.execution.ui.RunContentManager
 import com.intellij.icons.AllIcons
+import com.intellij.openapi.actionSystem.ActionManager
+import com.intellij.openapi.actionSystem.ActionUpdateThread
+import com.intellij.openapi.actionSystem.AnActionEvent
+import com.intellij.openapi.actionSystem.DefaultActionGroup
+import com.intellij.openapi.actionSystem.Separator
+import com.intellij.openapi.project.DumbAwareAction
+import java.awt.BorderLayout
+import javax.swing.JPanel
+import com.intellij.ide.ActivityTracker
 import com.intellij.openapi.Disposable
 import com.intellij.openapi.components.Service
 import com.intellij.openapi.components.service
@@ -14,9 +26,6 @@ import com.intellij.openapi.project.Project
 import com.intellij.openapi.util.Disposer
 import com.intellij.openapi.util.Key
 import com.intellij.openapi.util.SystemInfo
-import com.intellij.openapi.wm.ToolWindowManager
-import com.intellij.ui.content.Content
-import com.intellij.ui.content.ContentFactory
 import java.io.File
 import java.time.LocalTime
 import java.time.format.DateTimeFormatter
@@ -31,7 +40,9 @@ data class JobRuntime(
     var status: JobRuntimeStatus = JobRuntimeStatus.IDLE,
     var handler: KillableColoredProcessHandler? = null,
     var console: ConsoleView? = null,
-    var content: Content? = null,
+    // The job's tab in the platform Run tool window, and the tab it replaces on the next show.
+    var descriptor: RunContentDescriptor? = null,
+    var replacedDescriptor: RunContentDescriptor? = null,
     var stoppedByUser: Boolean = false,
     var lastCommand: String = "",
     var lastVariant: JobVariant? = null,
@@ -53,7 +64,6 @@ data class JobRuntime(
 class JobRuntimeManager(private val project: Project) : Disposable {
     private val runtimes = mutableMapOf<String, JobRuntime>()
     private val listeners = mutableListOf<() -> Unit>()
-    private var activeContent: Content? = null
     private val ansi = Regex("\\u001B(?:\\[[0-?]*[ -/]*[@-~]|\\][^\\u0007]*(?:\\u0007|\\u001B\\\\))")
 
     fun runtime(job: JobDefinition): JobRuntime = runtimes.getOrPut(job.id) { JobRuntime() }
@@ -98,6 +108,7 @@ class JobRuntimeManager(private val project: Project) : Disposable {
             val commandLine = GeneralCommandLine(shell).withWorkDirectory(workingDirectory)
             val handler = KillableColoredProcessHandler(commandLine)
             runtime.handler = handler
+            runtime.descriptor?.processHandler = handler
             console.attachToProcess(handler)
             handler.addProcessListener(object : ProcessListener {
                 override fun startNotified(event: ProcessEvent) {
@@ -127,9 +138,11 @@ class JobRuntimeManager(private val project: Project) : Disposable {
                     fireChanged()
                 }
             })
+            showRunTab(runtime)
             handler.startNotify()
         } catch (error: Exception) {
             runtime.status = JobRuntimeStatus.ERROR
+            showRunTab(runtime)
             console.print("${error.message}\n", com.intellij.execution.ui.ConsoleViewContentType.ERROR_OUTPUT)
             if (runtime.inSequence) advanceSequence(job, runtime, console)
             fireChanged()
@@ -199,42 +212,56 @@ class JobRuntimeManager(private val project: Project) : Disposable {
 
     fun openConsole(job: JobDefinition) {
         val runtime = runtime(job)
-        if (runtime.console == null) prepareConsole(job, runtime)
-        else runtime.content?.let { showOnly(it) }
-        val toolWindow = ToolWindowManager.getInstance(project).getToolWindow("Job Bar") ?: return
-        toolWindow.show {
-            runtime.content?.let { toolWindow.contentManager.setSelectedContent(it, true) }
-        }
+        if (runtime.descriptor?.let(::isShown) != true) prepareConsole(job, runtime)
+        showRunTab(runtime)
     }
 
+    /** Returns the console for this run: the job's existing Run tab when it reuses its console, otherwise a new tab. */
     private fun prepareConsole(job: JobDefinition, runtime: JobRuntime): ConsoleView {
-        if (job.reuseConsole && runtime.console != null) {
-            runtime.content?.let { showOnly(it) }
-            return runtime.console!!
-        }
-        runtime.content?.let { old -> removeContent(old) }
+        val current = runtime.descriptor?.takeIf(::isShown)
+        if (job.reuseConsole && current != null) return runtime.console!!
+
         val console = TextConsoleBuilderFactory.getInstance().createBuilder(project).console
-        val content = ContentFactory.getInstance().createContent(console.component, job.name, false).apply {
-            icon = AllIcons.Toolwindows.ToolWindowRun
-            isCloseable = false
+        val panel = JPanel(BorderLayout()).apply { add(console.component, BorderLayout.CENTER) }
+        val actions = DefaultActionGroup(RerunAction(job.id), StopAction(job.id), Separator.getInstance(), *console.createConsoleActions())
+        ActionManager.getInstance().createActionToolbar("JobBar.RunTab", actions, false).apply {
+            targetComponent = console.component
+            panel.add(component, BorderLayout.WEST)
         }
+        // The descriptor owns and disposes the console when its tab is closed or replaced.
+        runtime.descriptor = RunContentDescriptor(console, null, panel, job.name, AllIcons.Actions.Execute)
+        runtime.replacedDescriptor = current
         runtime.console = console
-        runtime.content = content
-        showOnly(content)
-        Disposer.register(this, console)
         return console
     }
 
-    private fun showOnly(content: Content) {
-        val manager = ToolWindowManager.getInstance(project).getToolWindow("Job Bar")?.contentManager ?: return
-        activeContent?.takeIf { it !== content }?.let { removeContent(it) }
-        if (!manager.contents.contains(content)) manager.addContent(content)
-        activeContent = content
+    private fun showRunTab(runtime: JobRuntime) {
+        val descriptor = runtime.descriptor ?: return
+        val manager = RunContentManager.getInstance(project)
+        val executor = DefaultRunExecutor.getRunExecutorInstance()
+        if (isShown(descriptor)) manager.toFrontRunContent(executor, descriptor)
+        else manager.showRunContent(executor, descriptor, runtime.replacedDescriptor)
+        runtime.replacedDescriptor = null
     }
 
-    private fun removeContent(content: Content) {
-        ToolWindowManager.getInstance(project).getToolWindow("Job Bar")?.contentManager?.removeContent(content, false)
-        if (activeContent === content) activeContent = null
+    private fun isShown(descriptor: RunContentDescriptor): Boolean =
+        RunContentManager.getInstance(project).allDescriptors.contains(descriptor)
+
+    // Run tab actions look the job up by id, so they use its latest definition after edits.
+    private fun jobById(id: String): JobDefinition? = JobBarService.get(project).jobs().find { it.id == id }
+
+    private inner class RerunAction(private val jobId: String) :
+        DumbAwareAction("Rerun", "Run the job again with the same variant", AllIcons.Actions.Restart) {
+        override fun getActionUpdateThread() = ActionUpdateThread.EDT
+        override fun update(e: AnActionEvent) { e.presentation.isEnabled = jobById(jobId) != null }
+        override fun actionPerformed(e: AnActionEvent) { jobById(jobId)?.let(::restart) }
+    }
+
+    private inner class StopAction(private val jobId: String) :
+        DumbAwareAction("Stop", "Stop the job", AllIcons.Actions.Suspend) {
+        override fun getActionUpdateThread() = ActionUpdateThread.EDT
+        override fun update(e: AnActionEvent) { e.presentation.isEnabled = runtimes[jobId]?.isActive() == true }
+        override fun actionPerformed(e: AnActionEvent) { jobById(jobId)?.let(::stop) }
     }
 
     private fun resolveCommand(job: JobDefinition, variant: JobVariant?): String {
@@ -316,7 +343,11 @@ class JobRuntimeManager(private val project: Project) : Disposable {
         BUSY(2)
     }
 
-    private fun fireChanged() = SwingUtilities.invokeLater { listeners.toList().forEach { it() } }
+    private fun fireChanged() = SwingUtilities.invokeLater {
+        listeners.toList().forEach { it() }
+        // Main toolbar labels are action components; ask the platform to update them now.
+        ActivityTracker.getInstance().inc()
+    }
 
     override fun dispose() {
         runtimes.values.forEach {

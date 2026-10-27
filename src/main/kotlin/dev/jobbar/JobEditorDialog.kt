@@ -38,6 +38,7 @@ class JobEditorDialog(
     private val original = source?.copyDeep()
     private val id = source?.id ?: java.util.UUID.randomUUID().toString()
     private val nameField = JBTextField(source?.name ?: "")
+    private val shortNameField = JBTextField(source?.shortName ?: "").apply { emptyText.text = "Defaults to the name" }
     private val commandField = JBTextField(source?.command ?: "")
     private val directoryField = JBTextField(source?.workingDirectory ?: "\$PROJECT_DIR\$")
     private val typeBox = ComboBox(DefaultComboBoxModel(JobType.entries.toTypedArray()))
@@ -87,6 +88,7 @@ class JobEditorDialog(
     override fun createCenterPanel(): JComponent {
         val general = FormBuilder.createFormBuilder()
             .addLabeledComponent("Name:", nameField)
+            .addLabeledComponent("Short name:", shortNameField)
             .addLabeledComponent("Job type:", typeBox)
             .addLabeledComponent("Run mode:", modeBox)
             .addLabeledComponent("Command:", commandField)
@@ -220,6 +222,7 @@ class JobEditorDialog(
     fun result(): JobDefinition = JobDefinition(
         id = id,
         name = nameField.text.trim(),
+        shortName = shortNameField.text.trim(),
         command = commandField.text.trim(),
         workingDirectory = directoryField.text.trim().ifBlank { "\$PROJECT_DIR\$" },
         runMode = modeBox.selectedItem as JobRunMode,

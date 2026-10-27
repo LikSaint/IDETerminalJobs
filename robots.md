@@ -21,6 +21,13 @@ src/main/kotlin/dev/jobbar/
   JobRuntimeManager.kt      запуск процессов, консоли, вычисление статуса по паттернам, «Run all»
   JobBarToolWindowFactory.kt  UI tool window: строки джоб, индикатор статуса, тулбар, контекстное меню,
                             Add/Run/Stop/Restart/Edit/Import/Export actions (класс JobBarView и inner-классы actions)
+  JobActions.kt             project-сервис с действиями джобы (Run/Stop/Restart/Console/Edit/Move/Copy/Delete),
+                            contextActions(job, variantsAsSubmenu) и showJobMenu(job, anchor) — общие для всех видов
+  JobStatusUi.kt            activeStatuses, isActive()/isBusy(), statusColor(), statusDescription(), StatusDotIcon,
+                            JobChip — короткий цветной ярлык с меню по клику (тулбары IDE)
+  JobBarMainToolbar.kt      JobBarMainToolbarGroup (в plugin.xml добавлена в MainToolbarRight, anchor=first) —
+                            по JobChipAction (CustomComponentAction) на каждую джобу; ShowInMainToolbarAction и
+                            JobBarMainToolbarSettings (PropertiesComponent проекта, ключ dev.jobbar.mainToolbar, по умолчанию true)
   JobEditorDialog.kt        диалог создания/редактирования (вкладки General / Parameters / Status);
                             таблица вариантов — ToolbarDecorator над EditableModel (add/remove/↑/↓),
                             плюс SortVariantsAction (popup сортировок) и AutoSortAction (CheckboxAction)
@@ -39,6 +46,7 @@ src/main/kotlin/dev/jobbar/
 ### Runtime (`JobRuntimeManager.kt`)
 - Project-level сервис. Состояние каждой джобы — в `JobRuntime`, в памяти, ключ — `job.id`.
 - Запуск: `GeneralCommandLine` → `/bin/zsh -lc <command>` (на Windows — `cmd.exe /c`), `KillableColoredProcessHandler`, консоль из `TextConsoleBuilderFactory`.
+- Консоли живут в платформенном окне **Run**: `prepareConsole()` создаёт `RunContentDescriptor` (панель: вертикальный тулбар Rerun/Stop/действия консоли + консоль), `showRunTab()` показывает его через `RunContentManager.showRunContent(DefaultRunExecutor, descriptor, replacedDescriptor)` или `toFrontRunContent`. При `reuseConsole` вкладка переиспользуется: новому процессу назначается `descriptor.processHandler`. Консоль освобождает дескриптор (он регистрирует её в `Disposer`), поэтому сам не регистрируй её повторно. Закрыл ли пользователь вкладку, проверяется через `RunContentManager.allDescriptors` (`isShown`).
 - Публичные входы: `run(job, variant)`, `runAll(job)`, `stop`, `restart` (повторяет `runtime.lastVariant`), `openConsole`. Внутри всё сходится в `start(job, variant, continueSequence)`.
 - Статусы (`JobRuntimeStatus`):
   - `STARTING` — tracked-процесс ждёт recovery-паттерна (лоадер);
@@ -50,14 +58,17 @@ src/main/kotlin/dev/jobbar/
   - TRACKED: события сразу меняют статус.
   - ONE_SHOT: события только выставляют `cycleHasError`. Итог считается в `processTerminated`: exit code ≠ 0 → ERROR; иначе `cycleHasError` → ERROR; иначе SUCCESS.
 - «Run all»: `runtime.sequence` + `sequenceIndex` (флаг `inSequence`). `advanceSequence()` вызывается из `processTerminated`. При SUCCESS следующий вариант запускается через `invokeLater` с проверкой, что прогон не остановили. При ERROR или STOPPED прогон прекращается, в консоль пишется итог. Между вариантами статус держится `RUNNING`, чтобы лоадер не мигал.
-- Об изменениях UI узнаёт через `addListener` / `fireChanged()`, который вызывается на EDT через `invokeLater`.
+- Об изменениях UI узнаёт через `addListener` / `fireChanged()`, который вызывается на EDT через `invokeLater`. `fireChanged()` и `JobBarService.changed()` также вызывают `ActivityTracker.getInstance().inc()`: без этого ярлыки в главном тулбаре (это action-компоненты) обновлялись бы только по таймеру тулбара.
+- Главный тулбар: `JobChipAction` кешируются по `job.id`, чтобы тулбар не пересоздавал компоненты при каждом обновлении. `update()` кладёт project/job в client properties у presentation, а `updateCustomComponent()` вызывает `JobChip.bind()`. Группа `MainToolbarRight` есть только в New UI.
 
 ### UI (`JobBarToolWindowFactory.kt`)
 - `JobBarView.refresh()` полностью пересобирает строки при любом изменении сервиса или runtime. Это просто и работает, но не держи в строках состояние между перерисовками.
 - `statusIndicator(runtime)` — иконка статуса и tooltip (`AnimatedIcon.Default` — лоадер, `StatusDotIcon` — цветная точка).
 - Кнопки строки: tracked в активном статусе или идущий «Run all» → Stop (+ Restart только для tracked); иначе → Run. `activeStatuses` — в companion.
 - `RunJobAction`: если вариантов нет — сразу `run`, иначе popup `JBPopupFactory.createActionGroupPopup` (с «All» сверху, если включено).
-- Меню ⋮ tool window (`gearActions`): Add Job, Import, Export.
+- Меню ⋮ tool window (`gearActions`): Add Job, Show Job Labels in Toolbars, Import, Export.
+- Компактного режима внутри tool window больше нет: компактный вид — это группа `JobBar.MainToolbar` («Job Bar Jobs», см. `JobBarMainToolbar.kt`). По умолчанию она в `MainToolbarRight`, пользователь может добавить её в любой тулбар через Menus and Toolbars.
+- Поля модели для ярлыков: `shortName`; вычисляемое `compactLabel` помечено `@get:Transient`.
 
 ### Хранение и обмен
 - `JobBarService` — `@State(name = "JobBar", storages = [Storage("jobBar.xml")])`, project-level.

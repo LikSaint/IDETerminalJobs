@@ -69,6 +69,7 @@ class JobBarToolWindowFactory : ToolWindowFactory {
 private class JobBarView(private val project: Project) {
     private val service = JobBarService.get(project)
     private val runtimes = JobRuntimeManager.get(project)
+    private val jobActions = JobActions.get(project)
     private val rows = object : JPanel(), Scrollable {
         override fun getPreferredScrollableViewportSize(): Dimension = preferredSize
         override fun getScrollableUnitIncrement(visibleRect: Rectangle, orientation: Int, direction: Int): Int = JBUI.scale(32)
@@ -91,6 +92,7 @@ private class JobBarView(private val project: Project) {
 
     fun gearActions(): ActionGroup = DefaultActionGroup().apply {
         add(AddJobAction())
+        add(ShowInMainToolbarAction())
         addSeparator()
         add(ImportJobsAction())
         add(ExportJobsAction())
@@ -148,15 +150,15 @@ private class JobBarView(private val project: Project) {
 
         val actions = DefaultActionGroup()
         if (runtime.inSequence) {
-            actions.add(StopJobAction(job))
+            actions.add(jobActions.stopAction(job))
         } else if (job.runMode == JobRunMode.TRACKED && runtime.status in activeStatuses) {
-            actions.add(StopJobAction(job))
-            actions.add(RestartJobAction(job))
+            actions.add(jobActions.stopAction(job))
+            actions.add(jobActions.restartAction(job))
         } else {
-            actions.add(RunJobAction(job))
+            actions.add(jobActions.runAction(job))
         }
-        actions.add(OpenConsoleAction(job))
-        actions.add(EditJobAction(job))
+        actions.add(jobActions.openConsoleAction(job))
+        actions.add(jobActions.editAction(job))
         val toolbar = ActionManager.getInstance().createActionToolbar("JobBar.JobRow", actions, true)
         toolbar.targetComponent = row
         toolbar.component.border = JBUI.Borders.empty()
@@ -182,7 +184,7 @@ private class JobBarView(private val project: Project) {
                 if (!event.isPopupTrigger) return
                 ActionManager.getInstance().createActionPopupMenu(
                     ActionPlaces.POPUP,
-                    contextActions(job)
+                    jobActions.contextActions(job)
                 ).component.show(event.component, event.x, event.y)
             }
         })
@@ -193,7 +195,7 @@ private class JobBarView(private val project: Project) {
                 if (!event.isPopupTrigger) return
                 ActionManager.getInstance().createActionPopupMenu(
                     ActionPlaces.POPUP,
-                    contextActions(job)
+                    jobActions.contextActions(job)
                 ).component.show(event.component, event.x, event.y)
             }
         })
@@ -237,68 +239,12 @@ private class JobBarView(private val project: Project) {
         minimumSize = preferredSize
         maximumSize = preferredSize
         isOpaque = false
-        when (runtime.status) {
-            JobRuntimeStatus.STARTING -> {
-                icon = AnimatedIcon.Default.INSTANCE
-                toolTipText = "Starting · waiting for a status match"
-            }
-            JobRuntimeStatus.RUNNING -> {
-                icon = AnimatedIcon.Default.INSTANCE
-                toolTipText = "Running"
-            }
-            JobRuntimeStatus.READY -> {
-                icon = StatusDotIcon(JBUI.CurrentTheme.ProgressBar.PASSED)
-                toolTipText = "Running and tracked"
-            }
-            JobRuntimeStatus.WARNING -> {
-                icon = StatusDotIcon(JBUI.CurrentTheme.ProgressBar.WARNING)
-                toolTipText = "Running with errors"
-            }
-            JobRuntimeStatus.SUCCESS -> {
-                icon = StatusDotIcon(JBUI.CurrentTheme.ProgressBar.PASSED)
-                toolTipText = "Completed successfully"
-            }
-            JobRuntimeStatus.ERROR -> {
-                icon = StatusDotIcon(JBUI.CurrentTheme.ProgressBar.FAILED)
-                toolTipText = "Failed"
-            }
-            JobRuntimeStatus.IDLE, JobRuntimeStatus.STOPPED -> Unit
+        icon = when (runtime.status) {
+            JobRuntimeStatus.STARTING, JobRuntimeStatus.RUNNING -> AnimatedIcon.Default.INSTANCE
+            JobRuntimeStatus.IDLE, JobRuntimeStatus.STOPPED -> null
+            else -> StatusDotIcon(statusColor(runtime.status))
         }
-        if (runtime.inSequence) {
-            val current = runtime.sequence[runtime.sequenceIndex]
-            toolTipText = "Running all · ${runtime.sequenceIndex + 1}/${runtime.sequence.size} · ${current.label}"
-        }
-    }
-
-    private fun contextActions(job: JobDefinition): DefaultActionGroup = DefaultActionGroup().apply {
-        add(RunJobAction(job, "Run…"))
-        val runtime = runtimes.runtime(job)
-        if (runtime.inSequence || runtime.status in activeStatuses) add(StopJobAction(job))
-        if (!runtime.inSequence && runtime.status in activeStatuses) add(RestartJobAction(job))
-        add(OpenConsoleAction(job))
-        addSeparator()
-        val index = service.jobs().indexOfFirst { it.id == job.id }
-        add(object : DumbAwareAction("Move Up", "Move job up", AllIcons.Actions.MoveUp) {
-            override fun update(e: AnActionEvent) { e.presentation.isEnabled = index > 0 }
-            override fun actionPerformed(e: AnActionEvent) = service.moveBy(job.id, -1)
-        })
-        add(object : DumbAwareAction("Move Down", "Move job down", AllIcons.Actions.MoveDown) {
-            override fun update(e: AnActionEvent) { e.presentation.isEnabled = index >= 0 && index < service.jobs().lastIndex }
-            override fun actionPerformed(e: AnActionEvent) = service.moveBy(job.id, 1)
-        })
-        addSeparator()
-        add(EditJobAction(job))
-        add(object : DumbAwareAction("Copy Job", "Create a copy of this job", AllIcons.Actions.Copy) {
-            override fun actionPerformed(e: AnActionEvent) = service.duplicate(job)
-        })
-        add(object : DumbAwareAction("Delete Job", null, AllIcons.General.Remove) {
-            override fun actionPerformed(e: AnActionEvent) {
-                if (Messages.showYesNoDialog(project, "Delete '${job.name}'?", "Delete Job", AllIcons.General.QuestionDialog) == Messages.YES) {
-                    runtimes.stop(job)
-                    service.delete(job)
-                }
-            }
-        })
+        toolTipText = statusDescription(runtime)
     }
 
     private inner class AddJobAction : DumbAwareAction("Add Job", "Create a command job", AllIcons.General.Add) {
@@ -351,83 +297,6 @@ private class JobBarView(private val project: Project) {
                 }
             } catch (error: Exception) {
                 Messages.showErrorDialog(project, error.message ?: "Unable to import jobs", "Import Jobs")
-            }
-        }
-    }
-
-    private inner class EditJobAction(private val job: JobDefinition) :
-        DumbAwareAction("Edit Job…", "Edit job", AllIcons.Actions.Edit) {
-        override fun actionPerformed(e: AnActionEvent) {
-            val dialog = JobEditorDialog(project, job)
-            if (dialog.showAndGet()) service.save(dialog.result())
-        }
-    }
-
-    private inner class RunJobAction(
-        private val job: JobDefinition,
-        text: String = "Run"
-    ) : DumbAwareAction(text, "Run ${job.name}", AllIcons.Actions.Execute) {
-        override fun update(e: AnActionEvent) {
-            val runtime = runtimes.runtime(job)
-            e.presentation.isEnabled = runtime.status !in activeStatuses
-        }
-
-        override fun actionPerformed(e: AnActionEvent) {
-            if (job.variants.isEmpty()) {
-                runtimes.run(job)
-                return
-            }
-            val variants = DefaultActionGroup().apply {
-                if (job.runAllVariants && job.runMode == JobRunMode.ONE_SHOT && job.variants.size > 1) {
-                    add(object : DumbAwareAction("All", "Run all ${job.variants.size} variants one after another", AllIcons.Actions.RunAll) {
-                        override fun actionPerformed(e: AnActionEvent) = runtimes.runAll(job)
-                    })
-                    addSeparator()
-                }
-                job.variants.forEach { variant ->
-                    add(object : DumbAwareAction(variant.label, variant.value, AllIcons.Actions.Execute) {
-                        override fun actionPerformed(e: AnActionEvent) = runtimes.run(job, variant)
-                    })
-                }
-            }
-            JBPopupFactory.getInstance().createActionGroupPopup(
-                "Run ${job.name}",
-                variants,
-                e.dataContext,
-                JBPopupFactory.ActionSelectionAid.SPEEDSEARCH,
-                true
-            ).showInBestPositionFor(e.dataContext)
-        }
-    }
-
-    private inner class StopJobAction(private val job: JobDefinition) :
-        DumbAwareAction("Stop", "Stop ${job.name}", AllIcons.Actions.Suspend) {
-        override fun actionPerformed(e: AnActionEvent) = runtimes.stop(job)
-    }
-
-    private inner class RestartJobAction(private val job: JobDefinition) :
-        DumbAwareAction("Restart", "Restart ${job.name}", AllIcons.Actions.Restart) {
-        override fun actionPerformed(e: AnActionEvent) = runtimes.restart(job)
-    }
-
-    private inner class OpenConsoleAction(private val job: JobDefinition) :
-        DumbAwareAction("Open Console", "Open command output", AllIcons.Debugger.Console) {
-        override fun actionPerformed(e: AnActionEvent) = runtimes.openConsole(job)
-    }
-
-    companion object {
-        private val activeStatuses = setOf(JobRuntimeStatus.STARTING, JobRuntimeStatus.RUNNING, JobRuntimeStatus.READY, JobRuntimeStatus.WARNING)
-
-        private class StatusDotIcon(private val color: Color) : Icon {
-            override fun getIconWidth(): Int = JBUI.scale(8)
-            override fun getIconHeight(): Int = JBUI.scale(8)
-
-            override fun paintIcon(component: Component?, graphics: Graphics, x: Int, y: Int) {
-                val g = graphics.create() as Graphics2D
-                g.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON)
-                g.color = color
-                g.fillOval(x, y, iconWidth, iconHeight)
-                g.dispose()
             }
         }
     }

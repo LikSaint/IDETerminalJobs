@@ -1,7 +1,7 @@
 <idea-plugin>
     <id>dev.jobbar</id>
     <name>Job Bar</name>
-    <version>0.4.2</version>
+    <version>0.7.0</version>
     <vendor>LikSaint</vendor>
     <description><![CDATA[
         Create reusable command jobs, run one-shot commands, monitor long-running processes,
@@ -16,4 +16,13 @@
                     anchor="bottom"
                     factoryClass="dev.jobbar.JobBarToolWindowFactory"/>
     </extensions>
+
+    <actions>
+        <!-- Job labels; placed in the New UI main toolbar by default, and can be added to any
+             toolbar via Settings | Appearance & Behavior | Menus and Toolbars ("Job Bar Jobs"). -->
+        <group id="JobBar.MainToolbar" class="dev.jobbar.JobBarMainToolbarGroup"
+               text="Job Bar Jobs" description="Status-colored labels of Job Bar jobs">
+            <add-to-group group-id="MainToolbarRight" anchor="first"/>
+        </group>
+    </actions>
 </idea-plugin>

@@ -6,7 +6,7 @@ plugins {
 }
 
 group = "dev.jobbar"
-version = "0.4.2"
+version = "0.7.0"
 
 repositories {
     mavenCentral()

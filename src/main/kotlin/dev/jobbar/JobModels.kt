@@ -1,6 +1,7 @@
 package dev.jobbar
 
 import com.intellij.openapi.util.text.NaturalComparator
+import com.intellij.util.xmlb.annotations.Transient
 import java.util.UUID
 
 enum class JobRunMode(val label: String) {
@@ -51,6 +52,8 @@ data class JobVariant(
 data class JobDefinition(
     var id: String = UUID.randomUUID().toString(),
     var name: String = "New job",
+    // Compact view: label shown instead of the name.
+    var shortName: String = "",
     var command: String = "",
     var workingDirectory: String = "\$PROJECT_DIR\$",
     var runMode: JobRunMode = JobRunMode.ONE_SHOT,
@@ -67,6 +70,9 @@ data class JobDefinition(
     var recoveryPatterns: String = ""
 ) {
     fun copyDeep(): JobDefinition = copy(variants = variants.map { it.copy() }.toMutableList())
+
+    @get:Transient
+    val compactLabel: String get() = shortName.ifBlank { name }
 }
 
 data class StatusPreset(val errors: String, val recovery: String, val busy: String = "")

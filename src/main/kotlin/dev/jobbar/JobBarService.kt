@@ -1,5 +1,6 @@
 package dev.jobbar
 
+import com.intellij.ide.ActivityTracker
 import com.intellij.openapi.components.PersistentStateComponent
 import com.intellij.openapi.components.Service
 import com.intellij.openapi.components.State
@@ -75,6 +76,7 @@ class JobBarService(private val project: Project) : PersistentStateComponent<Job
 
     private fun changed() {
         listeners.toList().forEach { it() }
+        ActivityTracker.getInstance().inc()
     }
 
     companion object {
