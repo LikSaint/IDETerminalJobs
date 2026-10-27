@@ -24,7 +24,7 @@ import javax.swing.JPanel
 import javax.swing.table.AbstractTableModel
 import javax.swing.table.TableCellEditor
 
-/** Creates or edits a group: a job that runs other jobs in parallel or one after another. */
+/** Creates or edits a launcher (a "group" job): starts other jobs all at once or one after another. */
 class GroupEditorDialog(
     project: Project,
     source: JobDefinition? = null
@@ -32,9 +32,9 @@ class GroupEditorDialog(
     private val id = source?.id ?: java.util.UUID.randomUUID().toString()
     // Members can be any job except groups (no nesting, so no cycles).
     private val jobs = JobBarService.get(project).jobs().filter { !it.isGroup }
-    private val nameField = JBTextField(source?.name ?: "")
+    private val nameField = JBTextField(source?.name ?: "").apply { emptyText.text = "e.g. Default" }
     private val shortNameField = JBTextField(source?.shortName ?: "").apply { emptyText.text = "Defaults to the name" }
-    private val iconBox = JobIcons.comboBox(source?.icon.orEmpty(), project)
+    // Launchers show their own state icons (start / loader / stop), so only the text can be hidden.
     private val iconOnly = JBCheckBox("Icon only: hide the text in toolbars", source?.iconOnly ?: false)
     private val enabled = JBCheckBox("Enabled", source?.enabled ?: true)
     private val sequential = JBRadioButton("One after another: start the next job when the previous one is ready", source?.groupSequential ?: true)
@@ -54,7 +54,7 @@ class GroupEditorDialog(
     }
 
     init {
-        title = if (source == null) "Create Group" else "Edit Group"
+        title = if (source == null) "Create Launcher" else "Edit Launcher"
         ButtonGroup().apply { add(sequential); add(parallel) }
         init()
     }
@@ -76,12 +76,11 @@ class GroupEditorDialog(
         val form = FormBuilder.createFormBuilder()
             .addLabeledComponent("Name:", nameField)
             .addLabeledComponent("Short name:", shortNameField)
-            .addLabeledComponent("Icon:", iconBox)
             .addComponentToRightColumn(iconOnly)
             .addComponent(enabled)
             .addSeparator()
             .addLabeledComponent("Start:", mode)
-            .addComponent(JBLabel("A one-shot job is done when it succeeds, a tracked process when it is ready. The group stops at the first failure."))
+            .addComponent(JBLabel("A one-shot job is done when it succeeds, a tracked process when it is ready. Starting stops at the first failure."))
             .addLabeledComponentFillVertically("Jobs:", table)
             .panel
         return JPanel(BorderLayout()).apply {
@@ -169,7 +168,7 @@ class GroupEditorDialog(
     }
 
     override fun doValidate(): ValidationInfo? {
-        if (nameField.text.isBlank()) return ValidationInfo("Enter a group name", nameField)
+        if (nameField.text.isBlank()) return ValidationInfo("Enter a launcher name", nameField)
         membersTable.cellEditor?.stopCellEditing()
         if (membersModel.rows.none { member -> jobs.any { it.id == member.jobId } }) return ValidationInfo("Add at least one job", membersTable)
         return null
@@ -179,7 +178,7 @@ class GroupEditorDialog(
         id = id,
         name = nameField.text.trim(),
         shortName = shortNameField.text.trim(),
-        icon = JobIcons.selectedKey(iconBox),
+        icon = "",
         iconOnly = iconOnly.isSelected,
         enabled = enabled.isSelected,
         runMode = JobRunMode.GROUP,

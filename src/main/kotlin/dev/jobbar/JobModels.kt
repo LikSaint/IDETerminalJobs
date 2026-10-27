@@ -7,8 +7,8 @@ import java.util.UUID
 enum class JobRunMode(val label: String) {
     ONE_SHOT("One-shot command"),
     TRACKED("Tracked process"),
-    // A group runs other jobs (in parallel or one after another) and has no command of its own.
-    GROUP("Group");
+    // A launcher ("group" in code) starts other jobs (all at once or one after another); no command of its own.
+    GROUP("Launcher");
 
     override fun toString(): String = label
 }

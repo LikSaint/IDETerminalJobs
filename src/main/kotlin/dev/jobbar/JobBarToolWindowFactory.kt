@@ -146,11 +146,11 @@ private class JobBarView(private val project: Project) {
             isOpaque = false
         }
         val title = SimpleColoredComponent().apply {
-            icon = JobIcons.find(job.icon, project) ?: if (job.isGroup) AllIcons.Nodes.Folder else null
+            icon = if (job.isGroup) AllIcons.Actions.RunAll else JobIcons.find(job.icon, project)
             append(job.name, if (job.enabled) SimpleTextAttributes.REGULAR_ATTRIBUTES else SimpleTextAttributes.GRAYED_ATTRIBUTES)
             if (!job.enabled) append("  disabled", SimpleTextAttributes.GRAYED_SMALL_ATTRIBUTES)
             toolTipText = when {
-                job.isGroup -> "Group: " + job.members.mapNotNull { m -> service.jobs().find { it.id == m.jobId }?.name }.joinToString(if (job.groupSequential) " → " else ", ")
+                job.isGroup -> "Launcher: " + job.members.mapNotNull { m -> service.jobs().find { it.id == m.jobId }?.name }.joinToString(if (job.groupSequential) " → " else ", ")
                 else -> runtime.lastCommand.ifBlank { job.command }
             }
         }
@@ -255,7 +255,7 @@ private class JobBarView(private val project: Project) {
         toolTipText = statusDescription(runtime)
     }
 
-    private inner class AddGroupAction : DumbAwareAction("Add Group", "Create a group that runs several jobs", AllIcons.Nodes.Folder) {
+    private inner class AddGroupAction : DumbAwareAction("Add Launcher", "Create a launcher that starts several jobs with one click", AllIcons.Actions.RunAll) {
         override fun actionPerformed(e: AnActionEvent) {
             val dialog = GroupEditorDialog(project)
             if (dialog.showAndGet()) service.save(dialog.result())

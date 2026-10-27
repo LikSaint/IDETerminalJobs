@@ -24,15 +24,18 @@ src/main/kotlin/dev/jobbar/
   JobActions.kt             project-сервис с действиями джобы (Run/Stop/Restart/Console/Edit/Move/Copy/Delete),
                             contextActions(job, variantsAsSubmenu) и showJobMenu(job, anchor) — общие для всех видов
   JobStatusUi.kt            activeStatuses, isActive()/isBusy(), statusColor(), statusDescription(), StatusDotIcon,
-                            JobChip — короткий цветной ярлык (тулбары IDE): левый клик → runOrShowMenu() (запуск через
-                            JobActions.runInteractive(..., anchor) или меню, если джоба активна), правый / popup trigger → меню
+                            JobChip — короткий цветной ярлык (тулбары IDE). Левая кнопка действует на отпускании: idle → запуск
+                            (runInteractive с anchor), активная → stop; удержание LONG_PRESS_MS (500 мс) на активной → иконка
+                            Restart, отпускание → restart; уход курсора при зажатой кнопке отменяет (cancelPress). Наведение на
+                            активную джобу показывает иконку Suspend. Запускатор (isGroup) всегда показывает иконку состояния:
+                            Execute → AnimatedIcon (groupLaunch) → Suspend, с точкой статуса. Правый / popup trigger → меню
   JobBarMainToolbar.kt      JobBarMainToolbarGroup (в plugin.xml добавлена в MainToolbarRight, anchor=first) —
                             по JobChipAction (CustomComponentAction) на каждую джобу; ShowInMainToolbarAction и
                             JobBarMainToolbarSettings (PropertiesComponent проекта, ключ dev.jobbar.mainToolbar, по умолчанию true)
   JobFileLinkFilter.kt      консольный Filter: пути к файлам (с :line:col или (line,col)) → OpenFileHyperlinkInfo
   JobShortcuts.kt           по действию «Run <job>» на джобу (id = JobBar.Run.<job.id>, pluginId dev.jobbar → Keymap | Plugins | Job Bar);
                             sync(project) вызывается из JobBarService.changed() и из JobShortcutsStartup (postStartupActivity)
-  GroupEditorDialog.kt      диалог группы (JobRunMode.GROUP): участники (GroupMember: jobId + variant, "*" = все варианты),
+  GroupEditorDialog.kt      диалог запускатора (в UI «Launcher», в коде — группа, JobRunMode.GROUP; иконку не выбирает): участники (GroupMember: jobId + variant, "*" = все варианты),
                             режим groupSequential; редакторы ячеек сами выбирают сохранённый id (таблица показывает имена)
   PackageJsonImport.kt      поиск package.json (глубина 4, без node_modules и т. п.), менеджер по lock-файлу,
                             эвристики режима/типа по имени и тексту скрипта; PackageJsonImportDialog — выбор скриптов

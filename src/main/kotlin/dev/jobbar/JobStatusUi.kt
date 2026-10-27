@@ -1,6 +1,7 @@
 package dev.jobbar
 
 import com.intellij.ide.DataManager
+import com.intellij.icons.AllIcons
 import com.intellij.openapi.project.Project
 import com.intellij.ui.AnimatedIcon
 import com.intellij.ui.JBColor
@@ -84,7 +85,13 @@ class StatusDotIcon(private val color: Color) : Icon {
     }
 }
 
-/** Short, status-colored job label used by the compact view and the main toolbar. Click opens the job menu. */
+/**
+ * Short, status-colored job label used by the IDE toolbars.
+ *
+ * Left click acts on release: an idle job runs (variants first), a running job or launcher stops. Holding the button
+ * on a running one switches the icon to "restart" and releasing restarts it. Moving the pointer off the label while
+ * the button is down cancels. Right click opens the job menu.
+ */
 class JobChip : JBPanel<JobChip>(BorderLayout()) {
     private val label = object : JBLabel() {
         override fun processMouseEvent(event: MouseEvent) {
@@ -92,9 +99,17 @@ class JobChip : JBPanel<JobChip>(BorderLayout()) {
         }
     }.apply { iconTextGap = JBUI.scale(4) }
     private val spinner = Timer(50) { label.repaint() }
+    private val longPress = Timer(LONG_PRESS_MS) {
+        holding = true
+        render()
+    }.apply { isRepeats = false }
     private var hovered = false
+    // Left button is down on the chip (and not cancelled by leaving it); holding = long press reached.
+    private var pressed = false
+    private var holding = false
     private var project: Project? = null
     private var job: JobDefinition? = null
+    private var runtime: JobRuntime? = null
 
     init {
         isOpaque = false
@@ -102,47 +117,111 @@ class JobChip : JBPanel<JobChip>(BorderLayout()) {
         cursor = Cursor.getPredefinedCursor(Cursor.HAND_CURSOR)
         add(label, BorderLayout.CENTER)
         // Toolbars may attach their own listeners (e.g. tooltips) to the inner label, which then swallows
-        // the events. Listen on both, and drop the hover only when the pointer really leaves the chip.
+        // the events. Listen on both, and judge "inside" against the whole chip.
         val listener = object : MouseAdapter() {
             override fun mouseEntered(event: MouseEvent) = setHovered(true)
             override fun mouseExited(event: MouseEvent) {
-                val point = SwingUtilities.convertPoint(event.component, event.point, this@JobChip)
-                if (!contains(point)) setHovered(false)
+                if (isInside(event)) return
+                setHovered(false)
+                cancelPress()
             }
-            // A plain left click runs the job; menu gestures are handled in interceptMenuGesture().
             override fun mousePressed(event: MouseEvent) {
-                if (SwingUtilities.isLeftMouseButton(event) && !event.isControlDown && !event.isPopupTrigger) runOrShowMenu()
+                if (!SwingUtilities.isLeftMouseButton(event) || event.isControlDown || event.isPopupTrigger) return
+                pressed = true
+                holding = false
+                if (runtime?.isActive() == true) longPress.restart()
+                render()
+            }
+            override fun mouseDragged(event: MouseEvent) {
+                if (pressed && !isInside(event)) cancelPress()
+            }
+            override fun mouseReleased(event: MouseEvent) {
+                if (!SwingUtilities.isLeftMouseButton(event) || !pressed) return
+                val restart = holding
+                cancelPress()
+                if (isInside(event)) perform(restart)
             }
         }
         addMouseListener(listener)
+        addMouseMotionListener(listener)
         label.addMouseListener(listener)
+        label.addMouseMotionListener(listener)
     }
 
     fun bind(project: Project, job: JobDefinition, runtime: JobRuntime) {
         this.project = project
         this.job = job
-        // The busy arc is drawn from the clock; repaint only while it is shown.
-        val spinning = runtime.isBusy() && JobIcons.find(job.icon, project) != null
-        if (spinning) spinner.start() else spinner.stop()
-        val icon = JobIcons.find(job.icon, project)
-        if (icon != null) {
-            // Icon mode: the status is a dot on the icon (a loader while busy); the text keeps its normal color.
-            label.icon = if (runtime.isBusy()) BusyBadgeIcon(icon) else StatusBadgeIcon(icon, statusDotColor(runtime.status))
-            label.text = if (job.iconOnly) "" else job.compactLabel
-            label.foreground = if (job.enabled) UIUtil.getLabelForeground() else UIUtil.getContextHelpForeground()
-        } else {
-            label.text = job.compactLabel
-            label.foreground = statusColor(runtime.status)
-            label.icon = if (runtime.isBusy()) AnimatedIcon.Default.INSTANCE else null
+        this.runtime = runtime
+        render()
+    }
+
+    private fun render() {
+        val project = project ?: return
+        val job = job ?: return
+        val runtime = runtime ?: return
+        val active = runtime.isActive()
+        val base = JobIcons.find(job.icon, project)
+        val dot = statusDotColor(runtime.status)
+        val icon: Icon? = when {
+            pressed && holding -> AllIcons.Actions.Restart
+            // A launcher shows what a click does: start, wait (loader) or stop; the dot keeps the status visible.
+            job.isGroup -> when {
+                runtime.groupLaunch != null || runtime.groupRestartPending -> AnimatedIcon.Default.INSTANCE
+                active -> StatusBadgeIcon(AllIcons.Actions.Suspend, dot)
+                else -> StatusBadgeIcon(AllIcons.Actions.Execute, dot)
+            }
+            // Pointing at a running job shows that a click stops it.
+            active && (hovered || pressed) -> StatusBadgeIcon(AllIcons.Actions.Suspend, dot)
+            base != null -> if (runtime.isBusy()) BusyBadgeIcon(base) else StatusBadgeIcon(base, dot)
+            runtime.isBusy() -> AnimatedIcon.Default.INSTANCE
+            else -> null
         }
-        val hint = if (runtime.isActive()) "Click or right-click for actions" else "Click to run · right-click for actions"
-        toolTipText = "<html>" + listOfNotNull(job.name, statusDescription(runtime)).joinToString(" · ") + "<br><small>$hint</small></html>"
+        label.icon = icon
+        label.text = if (job.iconOnly && icon != null) "" else job.compactLabel
+        label.foreground = when {
+            !job.enabled -> UIUtil.getContextHelpForeground()
+            // With an icon the status is the dot; plain text labels are colored by status.
+            base != null || job.isGroup -> UIUtil.getLabelForeground()
+            else -> statusColor(runtime.status)
+        }
+        // The busy arc is drawn from the clock; repaint only while it is shown.
+        if (icon is BusyBadgeIcon) spinner.start() else spinner.stop()
+        val hint = when {
+            active -> "Click to stop · hold to restart"
+            job.isGroup -> "Click to start all"
+            else -> "Click to run"
+        }
+        toolTipText = "<html>" + listOfNotNull(job.name, statusDescription(runtime)).joinToString(" · ") +
+            "<br><small>$hint · right-click for actions</small></html>"
         revalidate()
         repaint()
     }
 
+    private fun perform(restart: Boolean) {
+        val project = project ?: return
+        val job = job ?: return
+        val runtimes = JobRuntimeManager.get(project)
+        when {
+            restart -> runtimes.restart(job)
+            runtimes.runtime(job).isActive() -> runtimes.stop(job)
+            else -> JobActions.get(project).runInteractive(job, DataManager.getInstance().getDataContext(this), anchor = this)
+        }
+    }
+
+    private fun cancelPress() {
+        if (!pressed && !holding) return
+        longPress.stop()
+        pressed = false
+        holding = false
+        render()
+    }
+
+    private fun isInside(event: MouseEvent): Boolean =
+        contains(SwingUtilities.convertPoint(event.component, event.point, this))
+
     override fun removeNotify() {
         spinner.stop()
+        longPress.stop()
         super.removeNotify()
     }
 
@@ -159,18 +238,12 @@ class JobChip : JBPanel<JobChip>(BorderLayout()) {
         val gesture = event.isPopupTrigger || SwingUtilities.isRightMouseButton(event) ||
             (SwingUtilities.isLeftMouseButton(event) && event.isControlDown)
         if (!gesture) return false
-        if (event.id == MouseEvent.MOUSE_PRESSED) showMenu()
+        if (event.id == MouseEvent.MOUSE_PRESSED) {
+            cancelPress()
+            showMenu()
+        }
         event.consume()
         return true
-    }
-
-    /** Starts an idle job (asking for a variant first when it has any); a running one opens its menu instead. */
-    private fun runOrShowMenu() {
-        val project = project ?: return
-        val job = job ?: return
-        val actions = JobActions.get(project)
-        if (JobRuntimeManager.get(project).runtime(job).isActive()) actions.showJobMenu(job, this)
-        else actions.runInteractive(job, DataManager.getInstance().getDataContext(this), anchor = this)
     }
 
     private fun showMenu() {
@@ -180,8 +253,9 @@ class JobChip : JBPanel<JobChip>(BorderLayout()) {
     }
 
     private fun setHovered(value: Boolean) {
+        if (hovered == value) return
         hovered = value
-        repaint()
+        render()
     }
 
     override fun paintComponent(graphics: Graphics) {
@@ -189,12 +263,16 @@ class JobChip : JBPanel<JobChip>(BorderLayout()) {
         val g = graphics.create() as Graphics2D
         g.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON)
         val arc = JBUI.CurrentTheme.Tree.ARC.get()
-        if (hovered) {
-            g.color = JBUI.CurrentTheme.ActionButton.hoverBackground()
+        if (hovered || pressed) {
+            g.color = if (pressed) JBUI.CurrentTheme.ActionButton.pressedBackground() else JBUI.CurrentTheme.ActionButton.hoverBackground()
             g.fillRoundRect(0, 0, width - 1, height - 1, arc, arc)
         }
         g.color = JBUI.CurrentTheme.ActionButton.hoverBorder()
         g.drawRoundRect(0, 0, width - 1, height - 1, arc, arc)
         g.dispose()
+    }
+
+    private companion object {
+        const val LONG_PRESS_MS = 500
     }
 }
