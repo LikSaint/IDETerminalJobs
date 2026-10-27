@@ -24,7 +24,8 @@ src/main/kotlin/dev/jobbar/
   JobActions.kt             project-сервис с действиями джобы (Run/Stop/Restart/Console/Edit/Move/Copy/Delete),
                             contextActions(job, variantsAsSubmenu) и showJobMenu(job, anchor) — общие для всех видов
   JobStatusUi.kt            activeStatuses, isActive()/isBusy(), statusColor(), statusDescription(), StatusDotIcon,
-                            JobChip — короткий цветной ярлык с меню по клику (тулбары IDE)
+                            JobChip — короткий цветной ярлык (тулбары IDE): левый клик → runOrShowMenu() (запуск через
+                            JobActions.runInteractive(..., anchor) или меню, если джоба активна), правый / popup trigger → меню
   JobBarMainToolbar.kt      JobBarMainToolbarGroup (в plugin.xml добавлена в MainToolbarRight, anchor=first) —
                             по JobChipAction (CustomComponentAction) на каждую джобу; ShowInMainToolbarAction и
                             JobBarMainToolbarSettings (PropertiesComponent проекта, ключ dev.jobbar.mainToolbar, по умолчанию true)
@@ -77,7 +78,7 @@ src/main/kotlin/dev/jobbar/
 - «Run all»: `runtime.sequence` + `sequenceIndex` (флаг `inSequence`). `advanceSequence()` вызывается из `processTerminated`. При SUCCESS следующий вариант запускается через `invokeLater` с проверкой, что прогон не остановили. При ERROR или STOPPED прогон прекращается, в консоль пишется итог. Между вариантами статус держится `RUNNING`, чтобы лоадер не мигал.
 - Группы и звуки обрабатываются в `fireChanged()` на EDT перед уведомлением слушателей: `refreshGroups()` двигает запуск группы (`GroupLaunch`: последовательный — по одному участнику, пока `memberDone`, стоп на `memberFailed`) и пересчитывает статус группы из статусов участников (`groupSummary` = «N/M ready»); `playStatusSounds()` сравнивает `status` с `notifiedStatus`. Участники запускающейся группы молчат, итог озвучивает `finishGroup()`.
 - Об изменениях UI узнаёт через `addListener` / `fireChanged()`, который вызывается на EDT через `invokeLater`. `fireChanged()` и `JobBarService.changed()` также вызывают `ActivityTracker.getInstance().inc()`: без этого ярлыки в главном тулбаре (это action-компоненты) обновлялись бы только по таймеру тулбара.
-- Главный тулбар: `JobChipAction` кешируются по `job.id`, чтобы тулбар не пересоздавал компоненты при каждом обновлении. `update()` кладёт project/job в client properties у presentation, а `updateCustomComponent()` вызывает `JobChip.bind()`. Группа `MainToolbarRight` есть только в New UI.
+- Главный тулбар: `JobChipAction` кешируются по `job.id`, чтобы тулбар не пересоздавал компоненты при каждом обновлении. `update()` кладёт project/job в client properties у presentation, а `updateCustomComponent()` вызывает `JobChip.bind()`. Группа `MainToolbarRight` есть только в New UI. Последний элемент группы — `ToggleJobBarToolWindowAction` (показать/скрыть панель Job Bar).
 
 ### UI (`JobBarToolWindowFactory.kt`)
 - `JobBarView.refresh()` полностью пересобирает строки при любом изменении сервиса или runtime. Это просто и работает, но не держи в строках состояние между перерисовками.
