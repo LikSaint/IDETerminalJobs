@@ -34,7 +34,7 @@ class GroupEditorDialog(
     private val jobs = JobBarService.get(project).jobs().filter { !it.isGroup }
     private val nameField = JBTextField(source?.name ?: "")
     private val shortNameField = JBTextField(source?.shortName ?: "").apply { emptyText.text = "Defaults to the name" }
-    private val iconBox = JobIcons.comboBox(source?.icon.orEmpty())
+    private val iconBox = JobIcons.comboBox(source?.icon.orEmpty(), project)
     private val iconOnly = JBCheckBox("Icon only: hide the text in toolbars", source?.iconOnly ?: false)
     private val enabled = JBCheckBox("Enabled", source?.enabled ?: true)
     private val sequential = JBRadioButton("One after another: start the next job when the previous one is ready", source?.groupSequential ?: true)
@@ -179,7 +179,7 @@ class GroupEditorDialog(
         id = id,
         name = nameField.text.trim(),
         shortName = shortNameField.text.trim(),
-        icon = iconBox.selectedItem as? String ?: "",
+        icon = JobIcons.selectedKey(iconBox),
         iconOnly = iconOnly.isSelected,
         enabled = enabled.isSelected,
         runMode = JobRunMode.GROUP,

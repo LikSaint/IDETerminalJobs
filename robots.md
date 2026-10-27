@@ -36,7 +36,11 @@ src/main/kotlin/dev/jobbar/
   PackageJsonImport.kt      поиск package.json (глубина 4, без node_modules и т. п.), менеджер по lock-файлу,
                             эвристики режима/типа по имени и тексту скрипта; PackageJsonImportDialog — выбор скриптов
   JobSounds.kt              синтез коротких звуков в коде (javax.sound, без файлов); настройка app-level dev.jobbar.sounds
-  JobIcons.kt               набор иконок джоб (ключ в JobDefinition.icon), comboBox(), StatusBadgeIcon — иконка с точкой статуса
+  JobIcons.kt               иконки джоб: ключ из набора (свои SVG в resources/icons/jobbar, нейтральные — с вариантом _dark,
+                            плюс AllIcons) или "file:<путь>" для своего SVG/PNG (кеш по mtime, масштаб до 16 px);
+                            comboBox() с пунктом «Custom file…», StatusBadgeIcon — иконка с точкой статуса
+  NativeFileChooser.kt      chooseFile(): нативный FileDialog с JBR-подсказкой выбора файлов (см. «Грабли», п. 1) — используй его,
+                            а не FileChooser платформы
   JobEditorDialog.kt        диалог создания/редактирования (вкладки General / Parameters / Status);
                             таблица вариантов — ToolbarDecorator над EditableModel (add/remove/↑/↓),
                             плюс SortVariantsAction (popup сортировок) и AutoSortAction (CheckboxAction)

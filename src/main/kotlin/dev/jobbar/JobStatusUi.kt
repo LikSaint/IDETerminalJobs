@@ -109,7 +109,7 @@ class JobChip : JBPanel<JobChip>(BorderLayout()) {
     fun bind(project: Project, job: JobDefinition, runtime: JobRuntime) {
         this.project = project
         this.job = job
-        val icon = JobIcons.find(job.icon)
+        val icon = JobIcons.find(job.icon, project)
         if (icon != null) {
             // Icon mode: the status is a dot on the icon (a loader while busy); the text keeps its normal color.
             label.icon = if (runtime.isBusy()) AnimatedIcon.Default.INSTANCE else StatusBadgeIcon(icon, statusDotColor(runtime.status))

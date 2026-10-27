@@ -44,7 +44,7 @@ class JobEditorDialog(
     private val typeBox = ComboBox(DefaultComboBoxModel(JobType.entries.toTypedArray()))
     // Groups have their own dialog.
     private val modeBox = ComboBox(DefaultComboBoxModel(JobRunMode.entries.filter { it != JobRunMode.GROUP }.toTypedArray()))
-    private val iconBox = JobIcons.comboBox(source?.icon.orEmpty())
+    private val iconBox = JobIcons.comboBox(source?.icon.orEmpty(), project)
     private val iconOnly = JBCheckBox("Icon only: hide the text in toolbars", source?.iconOnly ?: false)
     private val enabled = JBCheckBox("Enabled", source?.enabled ?: true)
     private val readyPortField = JBTextField(source?.readyPort?.takeIf { it > 0 }?.toString().orEmpty(), 6).apply { emptyText.text = "e.g. 4200" }
@@ -259,7 +259,7 @@ class JobEditorDialog(
         busyPatterns = busyArea.text.trim(),
         errorPatterns = errorsArea.text.trim(),
         recoveryPatterns = recoveryArea.text.trim(),
-        icon = iconBox.selectedItem as? String ?: "",
+        icon = JobIcons.selectedKey(iconBox),
         iconOnly = iconOnly.isSelected,
         enabled = enabled.isSelected,
         readyPort = readyPortField.text.trim().toIntOrNull() ?: 0,

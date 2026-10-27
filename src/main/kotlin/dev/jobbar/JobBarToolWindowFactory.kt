@@ -28,7 +28,6 @@ import com.intellij.ui.content.ContentFactory
 import com.intellij.util.ui.JBUI
 import com.intellij.util.ui.UIUtil
 import com.intellij.openapi.vfs.LocalFileSystem
-import com.jetbrains.JBRFileDialog
 import java.awt.BorderLayout
 import java.awt.Component
 import java.awt.Color
@@ -147,7 +146,7 @@ private class JobBarView(private val project: Project) {
             isOpaque = false
         }
         val title = SimpleColoredComponent().apply {
-            icon = JobIcons.find(job.icon) ?: if (job.isGroup) AllIcons.Nodes.Folder else null
+            icon = JobIcons.find(job.icon, project) ?: if (job.isGroup) AllIcons.Nodes.Folder else null
             append(job.name, if (job.enabled) SimpleTextAttributes.REGULAR_ATTRIBUTES else SimpleTextAttributes.GRAYED_ATTRIBUTES)
             if (!job.enabled) append("  disabled", SimpleTextAttributes.GRAYED_SMALL_ATTRIBUTES)
             toolTipText = when {
@@ -298,27 +297,13 @@ private class JobBarView(private val project: Project) {
 
     private inner class ImportJobsAction : DumbAwareAction("Import Jobs…", "Import Job Bar jobs", AllIcons.Actions.MenuOpen) {
         override fun actionPerformed(e: AnActionEvent) {
-            // The platform chooser resolves the selection through VFS and the descriptor, which
-            // rejected valid files ("unable to locate"). A plain AWT dialog returns a real File.
-            // The IDE runs with -Dapple.awt.fileDialogForDirectories=true, which turns a plain
-            // macOS FileDialog into a folder picker (all files greyed out). Like the platform's
-            // own native chooser, explicitly request file selection through JBR hints.
-            val title = "Import Job Bar Jobs"
-            val dialog = when (val owner = SwingUtilities.getWindowAncestor(component)) {
-                is java.awt.Dialog -> FileDialog(owner, title, FileDialog.LOAD)
-                else -> FileDialog(owner as? Frame, title, FileDialog.LOAD)
-            }.apply {
-                directory = project.basePath
-                JBRFileDialog.get(this)?.apply {
-                    hints = JBRFileDialog.SELECT_FILES_HINT
-                    setFileFilterExtensions("Job Bar XML", arrayOf("xml"))
-                }
-                isVisible = true
+            val path = try {
+                chooseFile(component, "Import Job Bar Jobs", project.basePath, "Job Bar XML", listOf("xml")) ?: return
+            } catch (error: IllegalArgumentException) {
+                Messages.showErrorDialog(project, error.message ?: "Unable to import jobs", "Import Jobs")
+                return
             }
-            val path = dialog.files.firstOrNull()?.toPath() ?: return
             try {
-                require(Files.isRegularFile(path)) { "The selected file does not exist: $path" }
-                require(path.fileName.toString().endsWith(".xml", ignoreCase = true)) { "Please choose a Job Bar .xml file: $path" }
                 val xml = Files.readString(path, StandardCharsets.UTF_8)
                 if (Messages.showYesNoDialog(project, "Replace the current jobs with the imported definitions?", "Import Jobs", null) == Messages.YES) {
                     service.importXml(xml)
