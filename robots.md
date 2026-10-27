@@ -28,6 +28,9 @@ src/main/kotlin/dev/jobbar/
   JobBarMainToolbar.kt      JobBarMainToolbarGroup (в plugin.xml добавлена в MainToolbarRight, anchor=first) —
                             по JobChipAction (CustomComponentAction) на каждую джобу; ShowInMainToolbarAction и
                             JobBarMainToolbarSettings (PropertiesComponent проекта, ключ dev.jobbar.mainToolbar, по умолчанию true)
+  JobFileLinkFilter.kt      консольный Filter: пути к файлам (с :line:col или (line,col)) → OpenFileHyperlinkInfo
+  JobShortcuts.kt           по действию «Run <job>» на джобу (id = JobBar.Run.<job.id>, pluginId dev.jobbar → Keymap | Plugins | Job Bar);
+                            sync(project) вызывается из JobBarService.changed() и из JobShortcutsStartup (postStartupActivity)
   JobEditorDialog.kt        диалог создания/редактирования (вкладки General / Parameters / Status);
                             таблица вариантов — ToolbarDecorator над EditableModel (add/remove/↑/↓),
                             плюс SortVariantsAction (popup сортировок) и AutoSortAction (CheckboxAction)
@@ -46,7 +49,7 @@ src/main/kotlin/dev/jobbar/
 ### Runtime (`JobRuntimeManager.kt`)
 - Project-level сервис. Состояние каждой джобы — в `JobRuntime`, в памяти, ключ — `job.id`.
 - Запуск: `GeneralCommandLine` → `/bin/zsh -lc <command>` (на Windows — `cmd.exe /c`), `KillableColoredProcessHandler`, консоль из `TextConsoleBuilderFactory`.
-- Консоли живут в платформенном окне **Run**: `prepareConsole()` создаёт `RunContentDescriptor` (панель: вертикальный тулбар Rerun/Stop/действия консоли + консоль), `showRunTab()` показывает его через `RunContentManager.showRunContent(DefaultRunExecutor, descriptor, replacedDescriptor)` или `toFrontRunContent`. При `reuseConsole` вкладка переиспользуется: новому процессу назначается `descriptor.processHandler`. Консоль освобождает дескриптор (он регистрирует её в `Disposer`), поэтому сам не регистрируй её повторно. Закрыл ли пользователь вкладку, проверяется через `RunContentManager.allDescriptors` (`isShown`).
+- Консоли живут в платформенном окне **Run**: `prepareConsole()` создаёт `RunContentDescriptor` (панель: вертикальный тулбар Rerun/Stop/действия консоли + консоль), `showRunTab(runtime, bringToFront)` показывает его через `RunContentManager.showRunContent(DefaultRunExecutor, descriptor, replacedDescriptor)` или `toFrontRunContent`. Запуск идёт в фоне (`bringToFront = false`: у дескриптора выключены activate/select/autoFocus), на передний план выводит только `openConsole()`. Не возвращай автопоказ окна Run: пользователь явно попросил так не делать. При `reuseConsole` вкладка переиспользуется: новому процессу назначается `descriptor.processHandler`. Консоль освобождает дескриптор (он регистрирует её в `Disposer`), поэтому сам не регистрируй её повторно. Закрыл ли пользователь вкладку, проверяется через `RunContentManager.allDescriptors` (`isShown`).
 - Публичные входы: `run(job, variant)`, `runAll(job)`, `stop`, `restart` (повторяет `runtime.lastVariant`), `openConsole`. Внутри всё сходится в `start(job, variant, continueSequence)`.
 - Статусы (`JobRuntimeStatus`):
   - `STARTING` — tracked-процесс ждёт recovery-паттерна (лоадер);

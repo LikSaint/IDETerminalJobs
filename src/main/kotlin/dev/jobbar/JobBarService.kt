@@ -76,6 +76,7 @@ class JobBarService(private val project: Project) : PersistentStateComponent<Job
 
     private fun changed() {
         listeners.toList().forEach { it() }
+        JobShortcuts.sync(project)
         ActivityTracker.getInstance().inc()
     }
 

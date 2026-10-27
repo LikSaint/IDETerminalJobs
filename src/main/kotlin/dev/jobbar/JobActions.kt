@@ -4,6 +4,7 @@ import com.intellij.icons.AllIcons
 import com.intellij.ide.DataManager
 import com.intellij.openapi.actionSystem.AnAction
 import com.intellij.openapi.actionSystem.AnActionEvent
+import com.intellij.openapi.actionSystem.DataContext
 import com.intellij.openapi.actionSystem.DefaultActionGroup
 import com.intellij.openapi.actionSystem.Separator
 import com.intellij.openapi.components.Service
@@ -25,6 +26,21 @@ class JobActions(private val project: Project) {
     fun restartAction(job: JobDefinition): AnAction = RestartJobAction(job)
     fun openConsoleAction(job: JobDefinition): AnAction = OpenConsoleAction(job)
     fun editAction(job: JobDefinition): AnAction = EditJobAction(job)
+
+    /** Runs the job right away, or asks for a variant first when it has any. */
+    fun runInteractive(job: JobDefinition, dataContext: DataContext) {
+        if (job.variants.isEmpty()) {
+            runtimes.run(job)
+            return
+        }
+        JBPopupFactory.getInstance().createActionGroupPopup(
+            "Run ${job.name}",
+            DefaultActionGroup(variantActions(job)),
+            dataContext,
+            JBPopupFactory.ActionSelectionAid.SPEEDSEARCH,
+            true
+        ).showInBestPositionFor(dataContext)
+    }
 
     fun showJobMenu(job: JobDefinition, anchor: JComponent) {
         JBPopupFactory.getInstance().createActionGroupPopup(
@@ -106,19 +122,7 @@ class JobActions(private val project: Project) {
             e.presentation.isEnabled = runtimes.runtime(job).status !in activeStatuses
         }
 
-        override fun actionPerformed(e: AnActionEvent) {
-            if (job.variants.isEmpty()) {
-                runtimes.run(job)
-                return
-            }
-            JBPopupFactory.getInstance().createActionGroupPopup(
-                "Run ${job.name}",
-                DefaultActionGroup(variantActions(job)),
-                e.dataContext,
-                JBPopupFactory.ActionSelectionAid.SPEEDSEARCH,
-                true
-            ).showInBestPositionFor(e.dataContext)
-        }
+        override fun actionPerformed(e: AnActionEvent) = runInteractive(job, e.dataContext)
     }
 
     private inner class StopJobAction(private val job: JobDefinition) :

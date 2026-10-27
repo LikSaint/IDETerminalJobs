@@ -101,9 +101,7 @@ class JobRuntimeManager(private val project: Project) : Disposable {
         fireChanged()
 
         try {
-            val workingDirectory = job.workingDirectory
-                .replace("\$PROJECT_DIR\$", project.basePath.orEmpty())
-                .let(::File)
+            val workingDirectory = workingDirectory(job)
             val shell = if (SystemInfo.isWindows) listOf("cmd.exe", "/c", command) else listOf("/bin/zsh", "-lc", command)
             val commandLine = GeneralCommandLine(shell).withWorkDirectory(workingDirectory)
             val handler = KillableColoredProcessHandler(commandLine)
@@ -138,11 +136,11 @@ class JobRuntimeManager(private val project: Project) : Disposable {
                     fireChanged()
                 }
             })
-            showRunTab(runtime)
+            showRunTab(runtime, bringToFront = false)
             handler.startNotify()
         } catch (error: Exception) {
             runtime.status = JobRuntimeStatus.ERROR
-            showRunTab(runtime)
+            showRunTab(runtime, bringToFront = false)
             console.print("${error.message}\n", com.intellij.execution.ui.ConsoleViewContentType.ERROR_OUTPUT)
             if (runtime.inSequence) advanceSequence(job, runtime, console)
             fireChanged()
@@ -213,15 +211,20 @@ class JobRuntimeManager(private val project: Project) : Disposable {
     fun openConsole(job: JobDefinition) {
         val runtime = runtime(job)
         if (runtime.descriptor?.let(::isShown) != true) prepareConsole(job, runtime)
-        showRunTab(runtime)
+        showRunTab(runtime, bringToFront = true)
     }
+
+    private fun workingDirectory(job: JobDefinition): File =
+        File(job.workingDirectory.replace("\$PROJECT_DIR\$", project.basePath.orEmpty()))
 
     /** Returns the console for this run: the job's existing Run tab when it reuses its console, otherwise a new tab. */
     private fun prepareConsole(job: JobDefinition, runtime: JobRuntime): ConsoleView {
         val current = runtime.descriptor?.takeIf(::isShown)
         if (job.reuseConsole && current != null) return runtime.console!!
 
-        val console = TextConsoleBuilderFactory.getInstance().createBuilder(project).console
+        val console = TextConsoleBuilderFactory.getInstance().createBuilder(project)
+            .apply { addFilter(JobFileLinkFilter(project, workingDirectory(job))) }
+            .console
         val panel = JPanel(BorderLayout()).apply { add(console.component, BorderLayout.CENTER) }
         val actions = DefaultActionGroup(RerunAction(job.id), StopAction(job.id), Separator.getInstance(), *console.createConsoleActions())
         ActionManager.getInstance().createActionToolbar("JobBar.RunTab", actions, false).apply {
@@ -235,13 +238,25 @@ class JobRuntimeManager(private val project: Project) : Disposable {
         return console
     }
 
-    private fun showRunTab(runtime: JobRuntime) {
+    /**
+     * Runs happen in the background: the tab is added to the Run tool window without opening it or
+     * switching tabs. Only Open Console ([bringToFront]) shows the tool window and selects the tab.
+     */
+    private fun showRunTab(runtime: JobRuntime, bringToFront: Boolean) {
         val descriptor = runtime.descriptor ?: return
         val manager = RunContentManager.getInstance(project)
         val executor = DefaultRunExecutor.getRunExecutorInstance()
-        if (isShown(descriptor)) manager.toFrontRunContent(executor, descriptor)
-        else manager.showRunContent(executor, descriptor, runtime.replacedDescriptor)
-        runtime.replacedDescriptor = null
+        if (!isShown(descriptor)) {
+            descriptor.isActivateToolWindowWhenAdded = bringToFront
+            descriptor.isSelectContentWhenAdded = bringToFront
+            descriptor.isAutoFocusContent = bringToFront
+            manager.showRunContent(executor, descriptor, runtime.replacedDescriptor)
+            runtime.replacedDescriptor = null
+        }
+        if (bringToFront) {
+            manager.toFrontRunContent(executor, descriptor)
+            manager.getToolWindowByDescriptor(descriptor)?.show()
+        }
     }
 
     private fun isShown(descriptor: RunContentDescriptor): Boolean =

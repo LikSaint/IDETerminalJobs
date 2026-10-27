@@ -73,9 +73,14 @@ class JobChip : JBPanel<JobChip>(BorderLayout()) {
         border = JBUI.Borders.empty(3, 8)
         cursor = Cursor.getPredefinedCursor(Cursor.HAND_CURSOR)
         add(label, BorderLayout.CENTER)
-        addMouseListener(object : MouseAdapter() {
+        // Toolbars may attach their own listeners (e.g. tooltips) to the inner label, which then swallows
+        // the events. Listen on both, and drop the hover only when the pointer really leaves the chip.
+        val listener = object : MouseAdapter() {
             override fun mouseEntered(event: MouseEvent) = setHovered(true)
-            override fun mouseExited(event: MouseEvent) = setHovered(false)
+            override fun mouseExited(event: MouseEvent) {
+                val point = SwingUtilities.convertPoint(event.component, event.point, this@JobChip)
+                if (!contains(point)) setHovered(false)
+            }
             override fun mousePressed(event: MouseEvent) {
                 // Left click and the platform popup trigger both open the job menu.
                 if (SwingUtilities.isLeftMouseButton(event) || event.isPopupTrigger) showMenu()
@@ -83,7 +88,9 @@ class JobChip : JBPanel<JobChip>(BorderLayout()) {
             override fun mouseReleased(event: MouseEvent) {
                 if (event.isPopupTrigger) showMenu()
             }
-        })
+        }
+        addMouseListener(listener)
+        label.addMouseListener(listener)
     }
 
     fun bind(project: Project, job: JobDefinition, runtime: JobRuntime) {

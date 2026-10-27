@@ -1,7 +1,7 @@
 <idea-plugin>
     <id>dev.jobbar</id>
     <name>Job Bar</name>
-    <version>0.7.0</version>
+    <version>0.8.1</version>
     <vendor>LikSaint</vendor>
     <description><![CDATA[
         Create reusable command jobs, run one-shot commands, monitor long-running processes,
@@ -12,6 +12,7 @@
 
     <extensions defaultExtensionNs="com.intellij">
         <projectService serviceImplementation="dev.jobbar.JobBarService"/>
+        <postStartupActivity implementation="dev.jobbar.JobShortcutsStartup"/>
         <toolWindow id="Job Bar"
                     anchor="bottom"
                     factoryClass="dev.jobbar.JobBarToolWindowFactory"/>
