@@ -116,6 +116,7 @@ JAVA_HOME=/Applications/WebStorm.app/Contents/jbr/Contents/Home \
 2. **Exit code 0 при ошибке.** `yarn run` и подобные утилиты печатают ошибку и завершаются с кодом 0. Поэтому итог one-shot определяется ещё и по паттернам. Не возвращай логику «только exit code».
 3. **Restart** должен передавать `lastVariant`, иначе плейсхолдер `${…}` останется в команде неподставленным.
 4. `actionPerformed` выполняется на EDT под write-intent lock. Долгие модальные вещи на EDT задерживают фоновые write actions IDE (в `idea.log` появляется «Cannot execute background write action in 10 seconds»). Это не фатально, но тяжёлую работу на EDT не добавляй.
+5. **Мышь в ярлыках тулбара.** Главный тулбар навешивает на наши компоненты свои обработчики: подсказки и меню «Customize Toolbar…» (`MainToolbar.installClickListener`), причём consumed-события он не проверяет. Поэтому `JobChip` слушает мышь и на себе, и на внутреннем тексте, а жесты меню (правый клик, popup trigger, Ctrl+клик) перехватывает в `processMouseEvent` и дальше не передаёт. Не переноси обработку правого клика обратно в обычный `MouseListener`.
 
 ## Соглашения
 
