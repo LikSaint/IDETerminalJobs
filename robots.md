@@ -38,7 +38,7 @@ src/main/kotlin/dev/jobbar/
   JobSounds.kt              синтез коротких звуков в коде (javax.sound, без файлов); настройка app-level dev.jobbar.sounds
   JobIcons.kt               иконки джоб: ключ из набора (свои SVG в resources/icons/jobbar, нейтральные — с вариантом _dark,
                             плюс AllIcons) или "file:<путь>" для своего SVG/PNG (кеш по mtime, масштаб до 16 px);
-                            comboBox() с пунктом «Custom file…», StatusBadgeIcon — иконка с точкой статуса
+                            comboBox() с пунктом «Custom file…», StatusBadgeIcon — иконка с точкой статуса, BusyBadgeIcon — с вращающейся дугой (крутит Timer в JobChip, только пока джоба занята)
   NativeFileChooser.kt      chooseFile(): нативный FileDialog с JBR-подсказкой выбора файлов (см. «Грабли», п. 1) — используй его,
                             а не FileChooser платформы
   JobEditorDialog.kt        диалог создания/редактирования (вкладки General / Parameters / Status);

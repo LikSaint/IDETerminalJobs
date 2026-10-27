@@ -18,6 +18,8 @@ import java.awt.Graphics
 import java.awt.Graphics2D
 import java.awt.RenderingHints
 import java.awt.geom.Ellipse2D
+import java.awt.geom.Arc2D
+import java.awt.BasicStroke
 import com.intellij.ui.scale.JBUIScale
 import javax.swing.Icon
 
@@ -176,4 +178,37 @@ class StatusBadgeIcon(private val base: Icon, private val dotColor: Color?) : Ic
 
     private fun backgroundBehind(component: Component?): Color =
         generateSequence(component) { it.parent }.firstOrNull { it.isOpaque }?.background ?: JBColor.background()
+}
+
+/** [base] with a small spinning arc in its bottom-right corner, where the status dot sits otherwise. */
+class BusyBadgeIcon(private val base: Icon) : Icon {
+    override fun getIconWidth(): Int = base.iconWidth
+    override fun getIconHeight(): Int = base.iconHeight
+
+    override fun paintIcon(component: Component?, graphics: Graphics, x: Int, y: Int) {
+        base.paintIcon(component, graphics, x, y)
+        val g = graphics.create() as Graphics2D
+        g.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON)
+        g.setRenderingHint(RenderingHints.KEY_STROKE_CONTROL, RenderingHints.VALUE_STROKE_PURE)
+        val size = JBUIScale.scale(6f)
+        val stroke = JBUIScale.scale(1.3f)
+        val gap = JBUIScale.scale(1f)
+        val outer = size + gap * 2
+        val left = x + iconWidth - outer
+        val top = y + iconHeight - outer
+        // Cut-out in the background color, like the status dot, so the arc does not blend into the glyph.
+        g.color = generateSequence(component) { it.parent }.firstOrNull { it.isOpaque }?.background ?: JBColor.background()
+        g.fill(Ellipse2D.Float(left, top, outer, outer))
+        // One turn per second; the chip repaints while the job is busy.
+        val angle = -((System.currentTimeMillis() % 1000) * 360 / 1000).toDouble()
+        g.color = BUSY_COLOR
+        g.stroke = BasicStroke(stroke, BasicStroke.CAP_ROUND, BasicStroke.JOIN_ROUND)
+        val inset = gap + stroke / 2
+        g.draw(Arc2D.Float(left + inset, top + inset, outer - inset * 2, outer - inset * 2, angle.toFloat(), 270f, Arc2D.OPEN))
+        g.dispose()
+    }
+
+    private companion object {
+        val BUSY_COLOR = JBColor(Color(0x3574F0), Color(0x6EA2FF))
+    }
 }

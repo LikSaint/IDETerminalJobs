@@ -18,6 +18,7 @@ import java.awt.event.MouseAdapter
 import java.awt.event.MouseEvent
 import javax.swing.Icon
 import javax.swing.SwingUtilities
+import javax.swing.Timer
 
 val activeStatuses = setOf(JobRuntimeStatus.STARTING, JobRuntimeStatus.RUNNING, JobRuntimeStatus.READY, JobRuntimeStatus.WARNING)
 
@@ -85,6 +86,7 @@ class StatusDotIcon(private val color: Color) : Icon {
 /** Short, status-colored job label used by the compact view and the main toolbar. Click opens the job menu. */
 class JobChip : JBPanel<JobChip>(BorderLayout()) {
     private val label = JBLabel().apply { iconTextGap = JBUI.scale(4) }
+    private val spinner = Timer(50) { label.repaint() }
     private var hovered = false
     private var project: Project? = null
     private var job: JobDefinition? = null
@@ -117,10 +119,13 @@ class JobChip : JBPanel<JobChip>(BorderLayout()) {
     fun bind(project: Project, job: JobDefinition, runtime: JobRuntime) {
         this.project = project
         this.job = job
+        // The busy arc is drawn from the clock; repaint only while it is shown.
+        val spinning = runtime.isBusy() && JobIcons.find(job.icon, project) != null
+        if (spinning) spinner.start() else spinner.stop()
         val icon = JobIcons.find(job.icon, project)
         if (icon != null) {
             // Icon mode: the status is a dot on the icon (a loader while busy); the text keeps its normal color.
-            label.icon = if (runtime.isBusy()) AnimatedIcon.Default.INSTANCE else StatusBadgeIcon(icon, statusDotColor(runtime.status))
+            label.icon = if (runtime.isBusy()) BusyBadgeIcon(icon) else StatusBadgeIcon(icon, statusDotColor(runtime.status))
             label.text = if (job.iconOnly) "" else job.compactLabel
             label.foreground = if (job.enabled) UIUtil.getLabelForeground() else UIUtil.getContextHelpForeground()
         } else {
@@ -131,6 +136,11 @@ class JobChip : JBPanel<JobChip>(BorderLayout()) {
         toolTipText = listOfNotNull(job.name, statusDescription(runtime)).joinToString(" · ")
         revalidate()
         repaint()
+    }
+
+    override fun removeNotify() {
+        spinner.stop()
+        super.removeNotify()
     }
 
     private fun showMenu() {
