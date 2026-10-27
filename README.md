@@ -1,21 +1,67 @@
 # Job Bar
 
-Job Bar is a JetBrains IDE plugin for reusable project commands.
+Плагин для WebStorm и других IDE на платформе IntelliJ: панель с часто используемыми командами проекта.
 
-## Features
+## Зачем
 
-- One-shot jobs with a temporary success state and retained console output.
-- Tracked processes with run, stop, restart, console, and edit actions.
-- Configurable error and recovery patterns for live status detection.
-- Built-in presets for Angular, Vite, Node.js, TypeScript, Jest, Docker Compose, and Spring Boot.
-- Parameterized jobs with a native searchable popup of command variants.
-- Project-scoped job definitions and reusable consoles.
-- Native IntelliJ Platform actions, icons, popups, controls, colors, and theme support.
+В проекте обычно набирается десяток команд, которые нужно запускать регулярно: поднять фронт, поднять мок API, освободить порт, подтянуть переводы для нужного модуля. Держать их в терминале, искать в истории shell или каждый раз заводить Run Configuration неудобно.
 
-Use `$PROJECT_DIR$` in the working-directory field to refer to the current project root. In a parameterized command, use a placeholder such as `${file}`. When the placeholder is absent, the selected value is appended to the command.
+Job Bar собирает их в одну панель (tool window **Job Bar** внизу IDE). Каждая команда — это «джоба»: её можно запустить одной кнопкой, видеть статус, открыть вывод в консоли и перезапустить.
 
-## Build
+## Возможности
+
+### Два режима запуска
+- **One-shot command** — команда выполняется и завершается (`yarn lokaliser fetch …`, `lsof -ti:3001 | xargs kill`). Пока команда идёт, показывается лоадер. После завершения появляется зелёная (Success) или красная (Error) точка.
+- **Tracked process** — долгоживущий процесс (dev-сервер, watch-сборка, мок API). Плагин следит за его выводом и показывает текущее состояние: собирается, работает, есть ошибки. В строке есть кнопки Stop и Restart.
+
+### Статус по выводу, а не только по exit code
+Для каждой джобы задаются три набора паттернов, по одному на строку. Префикс `regex:` означает регулярное выражение; регистр и ANSI-цвета не учитываются:
+- **Build / rebuild** — процесс начал пересборку, показывается лоадер;
+- **Error** — в выводе ошибка;
+- **Recovery** — процесс снова в рабочем состоянии.
+
+Для one-shot это важно: многие утилиты (например, `yarn run`) печатают ошибку, но завершаются с кодом 0. Если последним в выводе совпал error-паттерн, джоба получит статус Error.
+
+### Готовые пресеты
+При выборе типа джобы паттерны подставляются автоматически. Есть пресеты для Angular, Vite, npm / Node.js, TypeScript compiler, Jest, Docker Compose и Spring Boot. Их можно поправить вручную или сбросить кнопкой **Reset to Type Preset**.
+
+### Параметры и варианты
+В команду можно вставить плейсхолдер, например `yarn lokaliser fetch affiliate_top ${file_name}`, и задать список вариантов (`common`, `home`, `auth`, …). При запуске открывается popup с поиском, где выбирается вариант. Если плейсхолдера в команде нет, значение дописывается в конец команды.
+
+### «All» — прогон всех вариантов по очереди
+На вкладке Parameters можно включить галочку **Add an “All” option** (только для one-shot). Тогда в popup появится пункт **All**:
+- варианты запускаются по порядку;
+- следующий стартует только после Success предыдущего;
+- при первой ошибке прогон останавливается, а в консоли пишется, на каком варианте он упал и сколько вариантов пропущено;
+- прогресс виден в подсказке у лоадера (`Running all · 3/25 · auth`), остановить прогон можно кнопкой Stop.
+
+### Консоли
+- У каждой джобы своя консоль. Если включено **Reuse console**, вывод следующих запусков дописывается в ту же консоль, а перед каждым запуском печатается строка с временем и командой.
+- **Restart** повторяет последний запуск с тем же вариантом.
+
+### Управление списком
+- Добавление, редактирование, копирование, удаление джоб, перемещение вверх и вниз — через контекстное меню строки.
+- Джобы хранятся отдельно для каждого проекта, в `.idea/jobBar.xml`.
+- **Export / Import** (меню ⋮ панели) — сохранение всех джоб в XML и загрузка их обратно, например чтобы перенести набор в другой проект или поделиться с командой.
+
+### Рабочая директория
+В поле Working directory можно использовать `$PROJECT_DIR$` — корень текущего проекта. На macOS и Linux команды выполняются через `/bin/zsh -lc`, поэтому доступны `nvm`, `yarn` и прочее, что настроено в профиле shell. На Windows команды выполняются через `cmd.exe /c`.
+
+## Установка
+
+1. Соберите плагин (см. ниже) или возьмите готовый zip.
+2. **Settings → Plugins → ⚙ → Install Plugin from Disk…** → выберите `build/distributions/JobBar-<версия>.zip`.
+3. Перезапустите IDE. Панель **Job Bar** появится внизу; первая джоба создаётся через ⋮ → **Add Job**.
+
+## Сборка
+
+Нужен JDK 21. Подойдёт JBR из самой IDE: `/Applications/WebStorm.app/Contents/jbr/Contents/Home`. Также нужен Gradle 9.x: Gradle wrapper в репозитории пока нет.
 
 ```bash
-./gradlew buildPlugin -PlocalIdePath=/Applications/WebStorm.app
+JAVA_HOME=/Applications/WebStorm.app/Contents/jbr/Contents/Home \
+  gradle buildPlugin -PlocalIdePath=/Applications/WebStorm.app/Contents
 ```
+
+С `-PlocalIdePath` плагин собирается против установленной IDE. Без него Gradle скачает WebStorm 2025.3.1.1. Результат сборки: `build/distributions/JobBar-<версия>.zip`.
+
+Поддерживаемые версии IDE: 2025.3 (build 253.*).
