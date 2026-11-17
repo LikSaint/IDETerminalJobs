@@ -27,6 +27,9 @@ import com.intellij.openapi.util.Disposer
 import com.intellij.openapi.util.Key
 import com.intellij.openapi.util.SystemInfo
 import com.intellij.util.concurrency.AppExecutorUtil
+import com.intellij.ide.SaveAndSyncHandler
+import com.intellij.openapi.vfs.LocalFileSystem
+import com.intellij.openapi.vfs.VfsUtil
 import java.io.File
 import java.net.HttpURLConnection
 import java.net.InetSocketAddress
@@ -68,7 +71,13 @@ data class JobRuntime(
     var groupRestartPending: Boolean = false,
     var groupSummary: String = "",
     // Incremented on every start, so a delayed reset never touches a newer run.
-    var runId: Int = 0
+    var runId: Int = 0,
+    // Before commands: output is not checked against status patterns until the main command starts.
+    var mainOutput: Boolean = true,
+    var preMainBuffer: String = "",
+    // After-success commands: started at most once per run.
+    var afterStarted: Boolean = false,
+    var afterHandler: KillableColoredProcessHandler? = null
 ) {
     val inSequence: Boolean get() = sequenceIndex in sequence.indices
 
@@ -116,6 +125,7 @@ class JobRuntimeManager(private val project: Project) : Disposable {
         if (!continueSequence) runtime.clearSequence()
         runtime.readyNotified = false
         runtime.runId++
+        runtime.afterStarted = false
 
         val command = resolveCommand(job, variant)
         val console = prepareConsole(job, runtime)
@@ -125,14 +135,17 @@ class JobRuntimeManager(private val project: Project) : Disposable {
         runtime.lastVariant = variant
         runtime.scanBuffer = ""
         runtime.cycleHasError = false
+        val before = commandLines(job.beforeCommands, job, variant)
+        runtime.mainOutput = before.isEmpty()
+        runtime.preMainBuffer = ""
         val progress = if (runtime.inSequence) "[${runtime.sequenceIndex + 1}/${runtime.sequence.size}] " else ""
         console.print("\n▶ ${LocalTime.now().format(DateTimeFormatter.ofPattern("HH:mm:ss"))}  $progress$command\n", com.intellij.execution.ui.ConsoleViewContentType.SYSTEM_OUTPUT)
+        before.forEach { console.print("  before: $it\n", com.intellij.execution.ui.ConsoleViewContentType.SYSTEM_OUTPUT) }
         fireChanged()
 
         try {
             val workingDirectory = workingDirectory(job)
-            val shell = if (SystemInfo.isWindows) listOf("cmd.exe", "/c", command) else listOf("/bin/zsh", "-lc", command)
-            val commandLine = GeneralCommandLine(shell).withWorkDirectory(workingDirectory)
+            val commandLine = GeneralCommandLine(shell(withBefore(before, command, job.stopOnBeforeFailure))).withWorkDirectory(workingDirectory)
             val handler = KillableColoredProcessHandler(commandLine)
             runtime.handler = handler
             runtime.descriptor?.processHandler = handler
@@ -150,7 +163,7 @@ class JobRuntimeManager(private val project: Project) : Disposable {
 
                 override fun onTextAvailable(event: ProcessEvent, outputType: Key<*>) {
                     val cleanText = ansi.replace(event.text, "")
-                    inspect(job, runtime, cleanText)
+                    mainPart(runtime, cleanText)?.let { inspect(job, runtime, it) }
                 }
 
                 override fun processTerminated(event: ProcessEvent) {
@@ -223,6 +236,7 @@ class JobRuntimeManager(private val project: Project) : Disposable {
         }
         runtime.stoppedByUser = true
         runtime.handler?.destroyProcess()
+        runtime.afterHandler?.destroyProcess()
     }
 
     fun restart(job: JobDefinition) {
@@ -524,6 +538,96 @@ class JobRuntimeManager(private val project: Project) : Disposable {
         }
     }
 
+    // ---- Before / after-success commands ------------------------------------------------------------------
+
+    private fun shell(command: String): List<String> =
+        if (SystemInfo.isWindows) listOf("cmd.exe", "/c", command) else listOf("/bin/zsh", "-lc", command)
+
+    /** Non-blank lines, with the parameter placeholder substituted (never appended, unlike the main command). */
+    private fun commandLines(text: String, job: JobDefinition, variant: JobVariant?): List<String> {
+        val placeholder = "\${${job.parameterName}}"
+        return text.lines().map { it.trim() }.filter { it.isNotEmpty() && !it.startsWith("#") }.map { line ->
+            if (variant != null && job.parameterName.isNotBlank()) line.replace(placeholder, variant.value) else line
+        }
+    }
+
+    /**
+     * One shell line: the before commands, a marker, then the main command. By default a failing before command is
+     * ignored (e.g. killing a port that is already free); with [stopOnFailure] it prevents the main command.
+     */
+    private fun withBefore(before: List<String>, command: String, stopOnFailure: Boolean): String {
+        if (before.isEmpty()) return command
+        val separator = when {
+            stopOnFailure -> " && "
+            SystemInfo.isWindows -> " & "
+            else -> "; "
+        }
+        val marker = if (SystemInfo.isWindows) "echo $MAIN_MARKER" else "echo '$MAIN_MARKER'"
+        return (before.map { "($it)" } + marker + command).joinToString(separator)
+    }
+
+    /** Returns the part of [text] produced by the main command, or null while the before commands are still running. */
+    private fun mainPart(runtime: JobRuntime, text: String): String? {
+        if (runtime.mainOutput) return text
+        val buffered = runtime.preMainBuffer + text
+        val index = buffered.indexOf(MAIN_MARKER)
+        if (index < 0) {
+            runtime.preMainBuffer = buffered.takeLast(MAIN_MARKER.length)
+            return null
+        }
+        runtime.mainOutput = true
+        runtime.preMainBuffer = ""
+        return buffered.substring(index + MAIN_MARKER.length).trimStart('\r', '\n').takeIf { it.isNotEmpty() }
+    }
+
+    /** Starts the after-success commands of jobs that just succeeded (one-shot) or became ready (tracked). EDT. */
+    private fun runAfterSuccessCommands() {
+        JobBarService.get(project).jobs().filter { !it.isGroup && (it.afterCommands.isNotBlank() || it.refreshFilesAfterSuccess) }.forEach { job ->
+            val runtime = runtimes[job.id] ?: return@forEach
+            if (runtime.afterStarted || runtime.inSequence) return@forEach
+            if (runtime.status != JobRuntimeStatus.SUCCESS && runtime.status != JobRuntimeStatus.READY) return@forEach
+            runtime.afterStarted = true
+            val commands = commandLines(job.afterCommands, job, runtime.lastVariant)
+            val console = runtime.console
+            if (commands.isEmpty() || console == null) {
+                if (job.refreshFilesAfterSuccess) reloadFromDisk(job, console)
+                return@forEach
+            }
+            commands.forEach { console.print("\n  after success: $it\n", com.intellij.execution.ui.ConsoleViewContentType.SYSTEM_OUTPUT) }
+            try {
+                // Stops at the first failing command.
+                val line = commands.joinToString(" && ") { "($it)" }
+                val handler = KillableColoredProcessHandler(GeneralCommandLine(shell(line)).withWorkDirectory(workingDirectory(job)))
+                runtime.afterHandler = handler
+                console.attachToProcess(handler)
+                handler.addProcessListener(object : ProcessListener {
+                    override fun processTerminated(event: ProcessEvent) {
+                        if (event.exitCode != 0) {
+                            console.print("  ✖ after-success commands failed (exit code ${event.exitCode})\n", com.intellij.execution.ui.ConsoleViewContentType.ERROR_OUTPUT)
+                        }
+                        if (job.refreshFilesAfterSuccess) SwingUtilities.invokeLater { if (!project.isDisposed) reloadFromDisk(job, console) }
+                    }
+                })
+                handler.startNotify()
+            } catch (error: Exception) {
+                console.print("  ✖ ${error.message}\n", com.intellij.execution.ui.ConsoleViewContentType.ERROR_OUTPUT)
+            }
+        }
+    }
+
+    /**
+     * Picks up files the job changed: refreshes the project and working directory and reloads open files.
+     * Unlike File | Reload All from Disk it does not save editors first, so unsaved edits never overwrite new files.
+     */
+    private fun reloadFromDisk(job: JobDefinition, console: ConsoleView?) {
+        val roots = listOfNotNull(project.basePath, workingDirectory(job).path)
+            .distinct()
+            .mapNotNull { LocalFileSystem.getInstance().refreshAndFindFileByPath(it) }
+        console?.print("  ↻ reloading files from disk\n", com.intellij.execution.ui.ConsoleViewContentType.SYSTEM_OUTPUT)
+        VfsUtil.markDirtyAndRefresh(true, true, true, *roots.toTypedArray())
+        SaveAndSyncHandler.getInstance().refreshOpenFiles()
+    }
+
     private fun resolveCommand(job: JobDefinition, variant: JobVariant?): String {
         if (variant == null) return job.command
         val placeholder = "\${${job.parameterName}}"
@@ -608,6 +712,7 @@ class JobRuntimeManager(private val project: Project) : Disposable {
         // Taken before groups advance, so the member that completes a launch stays quiet too.
         val launchingMembers = launchingGroupMembers()
         refreshGroups()
+        runAfterSuccessCommands()
         playStatusSounds(launchingMembers)
         listeners.toList().forEach { it() }
         // Main toolbar labels are action components; ask the platform to update them now.
@@ -619,12 +724,15 @@ class JobRuntimeManager(private val project: Project) : Disposable {
             it.readyCheck?.cancel(false)
             it.stoppedByUser = true
             it.handler?.destroyProcess()
+            it.afterHandler?.destroyProcess()
         }
         runtimes.clear()
     }
 
     companion object {
         private const val SUCCESS_DISPLAY_SECONDS = 5L
+        // Printed between the before commands and the main command; status patterns only see output after it.
+        private const val MAIN_MARKER = "--- main command ---"
 
         fun get(project: Project): JobRuntimeManager = project.service()
     }

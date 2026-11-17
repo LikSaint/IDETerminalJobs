@@ -59,6 +59,8 @@ src/main/kotlin/dev/jobbar/
 - `runAllVariants` — показывать пункт «All» в popup вариантов. Имеет смысл только для `ONE_SHOT`.
 - `variantSortOrder` (enum `VariantSortOrder`, сравнение через `NaturalComparator`) + `autoSortVariants`. Порядок `variants` в модели — тот, в котором они показываются и запускаются. Сортировка применяется в `JobEditorDialog`: разово через кнопку, а при `autoSortVariants` — после каждой правки и ещё раз в `result()`. Runtime ничего не сортирует.
 - `JobPresets.forType` — паттерны по умолчанию для каждого `JobType`.
+- `beforeCommands` / `stopOnBeforeFailure`: `withBefore()` склеивает их с основной командой в одну shell-строку (`(cmd); …; echo MAIN_MARKER; main` или через `&&`), так Stop убивает всё дерево. `mainPart()` пропускает вывод до маркера, поэтому паттерны видят только основную команду.
+- `afterCommands` / `refreshFilesAfterSuccess`: `runAfterSuccessCommands()` из `fireChanged()` — один раз за запуск (`afterStarted`, сброс в `start()`), при SUCCESS или первом READY и не посреди «All». Отдельный процесс `afterHandler` пишет в ту же консоль; затем `reloadFromDisk()` (`VfsUtil.markDirtyAndRefresh` + `SaveAndSyncHandler.refreshOpenFiles`, без сохранения документов).
 - `enabled` — выключенные джобы не запускаются (`start()`/`runGroup()` выходят сразу) и фильтруются в тулбаре и `JobShortcuts`.
 - `readyPort` / `readyUrl` (`hasReadyCheck`) — для TRACKED: `startReadyCheck()` раз в секунду проверяет порт/URL на `AppExecutorUtil` и переводит STARTING → READY, после первого успеха опрос прекращается.
 - `icon` / `iconOnly` — ключ из `JobIcons`; с иконкой `JobChip` рисует `StatusBadgeIcon` (точка статуса), текст не красится.

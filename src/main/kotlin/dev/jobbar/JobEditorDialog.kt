@@ -57,6 +57,10 @@ class JobEditorDialog(
     private val reuseConsole = JBCheckBox("Reuse the same console for subsequent runs", source?.reuseConsole ?: true)
     private val parameterField = JBTextField(source?.parameterName ?: "")
     private val runAllVariants = JBCheckBox("Add an “All” option that runs every variant in order", source?.runAllVariants ?: false)
+    private val beforeArea = JBTextArea(source?.beforeCommands ?: "", 6, 48)
+    private val stopOnBeforeFailure = JBCheckBox("Stop if a before-launch command fails", source?.stopOnBeforeFailure ?: false)
+    private val afterArea = JBTextArea(source?.afterCommands ?: "", 6, 48)
+    private val refreshFiles = JBCheckBox("Reload files from disk after success", source?.refreshFilesAfterSuccess ?: false)
     private val busyArea = JBTextArea(source?.busyPatterns ?: "", 5, 48)
     private val errorsArea = JBTextArea(source?.errorPatterns ?: "", 7, 48)
     private val recoveryArea = JBTextArea(source?.recoveryPatterns ?: "", 7, 48)
@@ -156,10 +160,24 @@ class JobEditorDialog(
             .addComponent(JBLabel("Tracked processes: checked every second until the first success, alongside the recovery patterns."))
             .panel
 
+        val hooks = FormBuilder.createFormBuilder()
+            .addLabeledComponent("Before launch:", JBScrollPane(beforeArea))
+            .addComponent(stopOnBeforeFailure)
+            .addComponent(JBLabel("One command per line, e.g. lsof -ti:3001 | xargs kill. By default a failure is ignored (nothing to kill is fine)."))
+            .addSeparator()
+            .addLabeledComponent("After success:", JBScrollPane(afterArea))
+            .addComponent(JBLabel("Run once per launch when a one-shot job succeeds or a tracked process first becomes ready."))
+            .addComponent(JBLabel("Output goes to the job console; \${parameter} is substituted; lines starting with # are skipped."))
+            .addSeparator()
+            .addComponent(refreshFiles)
+            .addComponent(JBLabel("For jobs that generate or download files: the IDE picks up the changes right away (after the commands above)."))
+            .panel
+
         val tabs = JTabbedPane().apply {
             addTab("General", general)
             addTab("Parameters", parameters)
             addTab("Status", status)
+            addTab("Before / After", hooks)
         }
         return JPanel(BorderLayout()).apply {
             border = JBUI.Borders.empty(8)
@@ -268,6 +286,10 @@ class JobEditorDialog(
         iconOnly = iconOnly.isSelected,
         enabled = enabled.isSelected,
         readyPort = readyPortField.text.trim().toIntOrNull() ?: 0,
-        readyUrl = readyUrlField.text.trim()
+        readyUrl = readyUrlField.text.trim(),
+        beforeCommands = beforeArea.text.trim(),
+        stopOnBeforeFailure = stopOnBeforeFailure.isSelected,
+        afterCommands = afterArea.text.trim(),
+        refreshFilesAfterSuccess = refreshFiles.isSelected
     )
 }

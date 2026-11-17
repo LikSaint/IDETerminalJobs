@@ -89,7 +89,13 @@ data class JobDefinition(
     var readyUrl: String = "",
     // Groups only.
     var members: MutableList<GroupMember> = mutableListOf(),
-    var groupSequential: Boolean = true
+    var groupSequential: Boolean = true,
+    // Shell commands (one per line) run before the main command and once after the job first succeeds.
+    var beforeCommands: String = "",
+    var stopOnBeforeFailure: Boolean = false,
+    var afterCommands: String = "",
+    // Reload files from disk (like File | Reload All from Disk) after the job succeeds and its after commands end.
+    var refreshFilesAfterSuccess: Boolean = false
 ) {
     fun copyDeep(): JobDefinition = copy(
         variants = variants.map { it.copy() }.toMutableList(),
